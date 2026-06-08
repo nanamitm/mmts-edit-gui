@@ -1,0 +1,8 @@
+build*/
+*.user
+*.suo
+*.obj
+*.pdb
+*.ilk
+*.exe
+_test.*
