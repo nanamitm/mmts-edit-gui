@@ -12,6 +12,15 @@ TimelineWidget::TimelineWidget(QWidget* parent)
 void TimelineWidget::setMap(const MmtsMap& map)
 {
     m_map = map;
+    m_inMs = 0;
+    m_outMs = map.durationMs > 0 ? map.durationMs : -1;
+    update();
+}
+
+void TimelineWidget::setEditRange(qint64 inMs, qint64 outMs)
+{
+    m_inMs = inMs;
+    m_outMs = outMs;
     update();
 }
 
@@ -66,6 +75,18 @@ void TimelineWidget::paintEvent(QPaintEvent*)
     for (const auto& change : m_map.mptChanges) {
         const int x = xForTime(change.timeMs);
         p.drawLine(x, lane.top() - 8, x, lane.bottom() + 8);
+    }
+
+    p.setPen(QPen(QColor(255, 92, 92), 3));
+    const int inX = xForTime(m_inMs);
+    p.drawLine(inX, lane.top() - 18, inX, lane.bottom() + 18);
+    if (m_outMs >= 0) {
+        const int outX = xForTime(m_outMs);
+        p.setPen(QPen(QColor(255, 126, 58), 3));
+        p.drawLine(outX, lane.top() - 18, outX, lane.bottom() + 18);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(255, 126, 58, 32));
+        p.drawRect(QRect(QPoint(inX, lane.top()), QPoint(outX, lane.bottom())).normalized());
     }
 
     p.setPen(QColor(196, 202, 211));

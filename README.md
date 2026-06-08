@@ -7,6 +7,24 @@ Current scope:
 - Load text `MMTSMAP 1` and binary `MMTSMAP2` sidecars.
 - Show track, MPT, RAP and seek counts.
 - Render a lightweight timeline with seek, RAP and MPT markers.
+- Save a basic `.mmtsedit` sidecar with one non-destructive source range.
+
+Current `.mmtsedit` shape:
+
+```json
+{
+  "version": 1,
+  "source": "sample.mmts",
+  "sourceSize": 123456789,
+  "map": "sample.mmtsmap",
+  "timeline": [
+    {
+      "sourceStartMs": 25000,
+      "sourceEndMs": 1800000
+    }
+  ]
+}
+```
 
 Build example:
 

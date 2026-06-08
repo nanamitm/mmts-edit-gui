@@ -1,12 +1,17 @@
 #include "MainWindow.h"
 
 #include <QAction>
+#include <QFile>
 #include <QFileDialog>
 #include <QHeaderView>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QToolBar>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -18,8 +23,29 @@ MainWindow::MainWindow(QWidget* parent)
 
     auto* openAction = new QAction("Open Map...", this);
     connect(openAction, &QAction::triggered, this, &MainWindow::openMapDialog);
+    auto* saveEditAction = new QAction("Save Edit...", this);
+    connect(saveEditAction, &QAction::triggered, this, &MainWindow::saveEditDialog);
     auto* fileMenu = menuBar()->addMenu("File");
     fileMenu->addAction(openAction);
+    fileMenu->addAction(saveEditAction);
+
+    m_inSpin = new QSpinBox(this);
+    m_inSpin->setRange(0, 24 * 60 * 60 * 1000);
+    m_inSpin->setSuffix(" ms");
+    m_inSpin->setToolTip("Source in point");
+    m_outSpin = new QSpinBox(this);
+    m_outSpin->setRange(0, 24 * 60 * 60 * 1000);
+    m_outSpin->setSuffix(" ms");
+    m_outSpin->setToolTip("Source out point");
+    connect(m_inSpin, qOverload<int>(&QSpinBox::valueChanged), this, &MainWindow::updateEditRange);
+    connect(m_outSpin, qOverload<int>(&QSpinBox::valueChanged), this, &MainWindow::updateEditRange);
+
+    auto* toolbar = addToolBar("Edit");
+    toolbar->addAction(openAction);
+    toolbar->addSeparator();
+    toolbar->addWidget(m_inSpin);
+    toolbar->addWidget(m_outSpin);
+    toolbar->addAction(saveEditAction);
 
     m_timeline = new TimelineWidget(this);
     m_trackTable = new QTableWidget(this);
@@ -54,6 +80,11 @@ bool MainWindow::openMap(const QString& path)
 
     m_map = map;
     m_timeline->setMap(m_map);
+    m_inSpin->setMaximum(static_cast<int>(qMin<qint64>(m_map.durationMs, m_inSpin->maximum())));
+    m_outSpin->setMaximum(static_cast<int>(qMin<qint64>(m_map.durationMs, m_outSpin->maximum())));
+    m_inSpin->setValue(0);
+    m_outSpin->setValue(static_cast<int>(qMax<qint64>(0, qMin<qint64>(m_map.durationMs, m_outSpin->maximum()))));
+    updateEditRange();
     populateTables();
     statusBar()->showMessage(QString("Loaded %1").arg(path));
     return true;
@@ -68,6 +99,59 @@ void MainWindow::openMapDialog()
         "MMTS Map (*.mmtsmap);;All Files (*)");
     if (!path.isEmpty())
         openMap(path);
+}
+
+void MainWindow::saveEditDialog()
+{
+    if (m_map.path.isEmpty()) {
+        QMessageBox::information(this, "Save Edit", "Open an .mmtsmap first.");
+        return;
+    }
+
+    QString defaultPath = m_map.path;
+    if (defaultPath.endsWith("map"))
+        defaultPath.chop(3);
+    defaultPath += "edit";
+
+    const QString path = QFileDialog::getSaveFileName(
+        this,
+        "Save MMTS Edit",
+        defaultPath,
+        "MMTS Edit (*.mmtsedit);;All Files (*)");
+    if (path.isEmpty())
+        return;
+
+    QString sourcePath = m_map.path;
+    if (sourcePath.endsWith("map"))
+        sourcePath.chop(3);
+
+    QJsonObject range;
+    range["sourceStartMs"] = m_inSpin->value();
+    range["sourceEndMs"] = m_outSpin->value();
+
+    QJsonObject root;
+    root["version"] = 1;
+    root["source"] = sourcePath;
+    root["sourceSize"] = static_cast<double>(m_map.sourceSize);
+    root["map"] = m_map.path;
+    root["timeline"] = QJsonArray{range};
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, "Save Edit Failed", file.errorString());
+        return;
+    }
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    statusBar()->showMessage(QString("Saved %1").arg(path));
+}
+
+void MainWindow::updateEditRange()
+{
+    if (!m_timeline)
+        return;
+    if (m_outSpin->value() < m_inSpin->value())
+        m_outSpin->setValue(m_inSpin->value());
+    m_timeline->setEditRange(m_inSpin->value(), m_outSpin->value());
 }
 
 void MainWindow::populateTables()

@@ -4,6 +4,7 @@
 #include "TimelineWidget.h"
 
 #include <QMainWindow>
+#include <QSpinBox>
 #include <QTableWidget>
 
 class MainWindow : public QMainWindow {
@@ -16,6 +17,8 @@ public:
 
 private:
     void openMapDialog();
+    void saveEditDialog();
+    void updateEditRange();
     void populateTables();
     void populateTrackTable();
     void populateMptTable();
@@ -23,6 +26,8 @@ private:
 
     MmtsMap m_map;
     TimelineWidget* m_timeline = nullptr;
+    QSpinBox* m_inSpin = nullptr;
+    QSpinBox* m_outSpin = nullptr;
     QTableWidget* m_trackTable = nullptr;
     QTableWidget* m_mptTable = nullptr;
     QTableWidget* m_rapTable = nullptr;
