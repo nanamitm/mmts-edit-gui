@@ -14,20 +14,20 @@
 // PTS/DTS are rebased so the output timeline is contiguous across cuts (no PTS
 // discontinuity) -- unlike the raw .mmts byte-copy export.
 //
-// Smart rendering: the IN point is frame-accurate -- if it does not sit on a
-// RAP, the lead-in [IN, nextRAP) is re-encoded as a fresh IDR-led GOP and spliced
-// in front of the stream copy that resumes at nextRAP. The OUT point stays
-// RAP-aligned for now.
+// Smart rendering: both IN and OUT points are frame-accurate. The video is
+//   re-encode [IN, copyStart)  ++  copy [copyStart, copyEnd)  ++  re-encode [copyEnd, OUT)
+// where copyStart/copyEnd are RAP boundaries. A partial lead-in / tail GOP is
+// re-encoded (IDR-led) and spliced around the stream copy; a segment shorter
+// than one GOP is re-encoded whole. Audio/subtitle are gated to [IN, OUT).
 class MmtsTsExporter {
 public:
     struct Segment {
         qint64 inAbsMs = 0;      // frame-accurate IN, absolute presentation ms
+        qint64 outAbsMs = 0;     // frame-accurate OUT (exclusive), absolute ms
         qint64 prerollByte = 0;  // demux start: RAP at/before IN
-        qint64 rNextByte = 0;    // stream copy start: RAP at/after IN
-        qint64 rNextMs = 0;      // absolute presentation ms at rNextByte
-        qint64 endByte = 0;      // demux/copy end: RAP at/after the EDL out
-        qint64 endMs = 0;        // absolute presentation ms at endByte
-        bool reencode = false;   // IN is not on a RAP -> re-encode [IN, rNext)
+        qint64 endByte = 0;      // demux end: RAP at/after OUT
+        qint64 copyStartMs = 0;  // stream-copy video range (abs ms); empty if >= copyEndMs
+        qint64 copyEndMs = 0;
     };
 
     static QVector<Segment> planSegments(const MmtsMap& map,

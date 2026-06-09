@@ -31,9 +31,11 @@ int main(int argc, char** argv)
     QVector<EditSegment> segs = { {60050, 120000}, {300100, 360000} };
     const auto plan = MmtsTsExporter::planSegments(map, segs, srcSize);
     for (int i = 0; i < plan.size(); ++i) {
-        std::fprintf(stderr, "seg[%d] in=%lld rNext=%lld(byte %lld) end=%lld(byte %lld) reencode=%d\n", i,
-                     (long long)plan[i].inAbsMs, (long long)plan[i].rNextMs, (long long)plan[i].rNextByte,
-                     (long long)plan[i].endMs, (long long)plan[i].endByte, plan[i].reencode ? 1 : 0);
+        std::fprintf(stderr, "seg[%d] in=%lld out=%lld copy=[%lld..%lld] leadIn=%lldms tail=%lldms\n", i,
+                     (long long)plan[i].inAbsMs, (long long)plan[i].outAbsMs,
+                     (long long)plan[i].copyStartMs, (long long)plan[i].copyEndMs,
+                     (long long)(plan[i].copyStartMs - plan[i].inAbsMs),
+                     (long long)(plan[i].outAbsMs - plan[i].copyEndMs));
     }
 
     if (!MmtsTsExporter::exportTs(src, out, map, segs, srcSize, &err)) {

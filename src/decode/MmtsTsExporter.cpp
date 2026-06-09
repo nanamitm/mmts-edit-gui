@@ -32,60 +32,79 @@ uint64_t absMsToStreamPts(qint64 absMs, const MmtTlv::MmtStream::TimeBase& tb)
     return static_cast<uint64_t>(absMs * static_cast<int64_t>(tb.den) / (1000LL * tb.num));
 }
 
-// TS remuxer that: rebases timestamps per segment (base setPtsOffset), drops the
-// lead-in that the re-encoded GOP replaces, injects the re-encoded AUs, and gates
-// audio/subtitle to the frame-accurate IN. NTP-driven PCR is suppressed.
+// TS remuxer that, per segment: rebases timestamps (base setPtsOffset), copies
+// only the video in [copyStart, copyEnd), injects the re-encoded lead-in before
+// it and the re-encoded tail after it, and gates audio/subtitle to [IN, OUT).
+// NTP-driven PCR is suppressed.
 class SmartRebasingRemuxer : public RemuxerHandler {
 public:
     explicit SmartRebasingRemuxer(MmtTlv::MmtTlvDemuxer& d) : RemuxerHandler(d) {}
 
     void setOffsetMs(qint64 offsetMs) { setPtsOffset(offsetMs * 90); }
-    void setSegment(const std::vector<HevcReencoder::Au>* reAus, qint64 rNextMs, qint64 inAbsMs, qint64 firstPts)
+    void setSegment(const std::vector<HevcReencoder::Au>* leadIn,
+                    const std::vector<HevcReencoder::Au>* tail,
+                    qint64 copyStartMs, qint64 copyEndMs,
+                    qint64 inAbsMs, qint64 outAbsMs, qint64 firstPts)
     {
-        m_reAus = reAus;
-        m_rNextMs = rNextMs;
+        m_leadIn = leadIn;
+        m_tail = tail;
+        m_copyStartMs = copyStartMs;
+        m_copyEndMs = copyEndMs;
         m_inAbsMs = inAbsMs;
+        m_outAbsMs = outAbsMs;
         m_firstPts = firstPts;
         m_videoStream = nullptr;
-        m_injected = false;
+        m_leadInDone = false;
+    }
+
+    // Called after the segment's demux: ensures the lead-in is injected (e.g.
+    // when there was no copied frame) and appends the re-encoded tail.
+    void finalizeSegment()
+    {
+        ensureLeadIn();
+        inject(m_tail);
     }
 
     void onVideoData(const MmtTlv::MmtStream& stream, const MmtTlv::MfuData& mfu) override
     {
         if (!m_videoStream)
             m_videoStream = &stream;
-        const qint64 abs = ptsToMs(mfu.pts, stream);
-        if (abs >= 0 && abs < m_rNextMs)
-            return; // lead-in: replaced by the re-encoded GOP
-        if (!m_injected) {
-            injectReencoded();
-            m_injected = true;
-        }
+        const qint64 pts = ptsToMs(mfu.pts, stream);
+        if (pts < m_copyStartMs || pts >= m_copyEndMs)
+            return; // outside the stream-copy range (lead-in is re-encoded)
+        ensureLeadIn();
         RemuxerHandler::onVideoData(stream, mfu);
     }
     void onAudioData(const MmtTlv::MmtStream& stream, const MmtTlv::MfuData& mfu) override
     {
         const qint64 abs = ptsToMs(mfu.pts, stream);
-        if (abs >= 0 && abs < m_inAbsMs)
-            return; // before the frame-accurate IN
+        if (abs >= 0 && (abs < m_inAbsMs || abs >= m_outAbsMs))
+            return;
         RemuxerHandler::onAudioData(stream, mfu);
     }
     void onSubtitleData(const MmtTlv::MmtStream& stream, const MmtTlv::MfuData& mfu) override
     {
         const qint64 abs = ptsToMs(mfu.pts, stream);
-        if (abs >= 0 && abs < m_inAbsMs)
+        if (abs >= 0 && (abs < m_inAbsMs || abs >= m_outAbsMs))
             return;
         RemuxerHandler::onSubtitleData(stream, mfu);
     }
     void onNtp(const MmtTlv::NTPv4&) override {}
 
 private:
-    void injectReencoded()
+    void ensureLeadIn()
     {
-        if (!m_videoStream || !m_reAus || m_reAus->empty())
+        if (m_leadInDone)
+            return;
+        inject(m_leadIn);
+        m_leadInDone = true;
+    }
+    void inject(const std::vector<HevcReencoder::Au>* aus)
+    {
+        if (!m_videoStream || !aus || aus->empty())
             return;
         const auto& tb = m_videoStream->getTimeBase();
-        for (const auto& au : *m_reAus) {
+        for (const auto& au : *aus) {
             MmtTlv::MfuData m;
             m.data = au.data;
             m.streamIndex = m_videoStream->getStreamIndex();
@@ -99,12 +118,12 @@ private:
         }
     }
 
-    const std::vector<HevcReencoder::Au>* m_reAus = nullptr;
-    qint64 m_rNextMs = 0;
-    qint64 m_inAbsMs = 0;
-    qint64 m_firstPts = 0;
+    const std::vector<HevcReencoder::Au>* m_leadIn = nullptr;
+    const std::vector<HevcReencoder::Au>* m_tail = nullptr;
+    qint64 m_copyStartMs = 0, m_copyEndMs = 0;
+    qint64 m_inAbsMs = 0, m_outAbsMs = 0, m_firstPts = 0;
     const MmtTlv::MmtStream* m_videoStream = nullptr;
-    bool m_injected = false;
+    bool m_leadInDone = false;
 };
 
 } // namespace
@@ -117,49 +136,47 @@ QVector<MmtsTsExporter::Segment> MmtsTsExporter::planSegments(const MmtsMap& map
     std::sort(raps.begin(), raps.end(), [](const MmtsPoint& a, const MmtsPoint& b) { return a.timeMs < b.timeMs; });
 
     const qint64 firstPts = map.firstVideoPtsMs > 0 ? map.firstVideoPtsMs : 0;
-    const qint64 endAbsFallback = (map.durationMs > 0 ? map.durationMs : 0) + firstPts;
-    constexpr qint64 kReencodeThresholdMs = 20; // IN within ~1 frame of a RAP -> no re-encode
+    constexpr qint64 kThr = 20; // within ~1 frame of a RAP -> treat as RAP-aligned
 
     QVector<Segment> out;
     for (const auto& seg : segments) {
         Segment s;
         s.inAbsMs = seg.startMs + firstPts;
+        s.outAbsMs = seg.endMs + firstPts;
+        if (s.outAbsMs <= s.inAbsMs)
+            continue;
 
-        // RAP at/before IN (demux start) and at/after IN (copy start).
-        qint64 prevByte = 0, prevMs = firstPts;
-        qint64 nextByte = -1, nextMs = -1;
+        // RAPs around IN: prev (demux start) and next (copy start).
+        qint64 prevByte = 0;
+        qint64 rNextMs = -1;
         for (const auto& p : raps) {
-            if (p.timeMs <= s.inAbsMs) {
-                prevByte = static_cast<qint64>(p.offset);
-                prevMs = p.timeMs;
-            } else {
-                nextByte = static_cast<qint64>(p.offset);
-                nextMs = p.timeMs;
-                break;
-            }
+            if (p.timeMs <= s.inAbsMs) prevByte = static_cast<qint64>(p.offset);
+            else { rNextMs = p.timeMs; break; }
         }
-        if (nextByte < 0) { // IN at/after last RAP: copy from the RAP at/before
-            nextByte = prevByte;
-            nextMs = prevMs;
-        }
-        s.prerollByte = prevByte;
-        s.rNextByte = nextByte;
-        s.rNextMs = nextMs;
+        if (rNextMs < 0) rNextMs = s.inAbsMs;
 
-        // End: RAP at/after the EDL out point.
-        const qint64 outAbs = seg.endMs + firstPts;
-        qint64 endByte = sourceSizeBytes, endMs = endAbsFallback;
+        // OUT: RAP at/after OUT (copy end + demux end). OUT-point smart rendering
+        // (re-encoding the tail GOP) is deferred -- splicing a re-encoded tail
+        // after a stream copy hits HEVC parameter-set / open-GOP reference issues.
+        qint64 rEndMs = -1;
+        qint64 endByte = sourceSizeBytes;
         for (const auto& p : raps) {
-            if (p.timeMs >= outAbs) { endByte = static_cast<qint64>(p.offset); endMs = p.timeMs; break; }
+            if (p.timeMs >= s.outAbsMs) { rEndMs = p.timeMs; endByte = static_cast<qint64>(p.offset); break; }
         }
+        if (rEndMs < 0)
+            rEndMs = (map.durationMs > 0 ? map.durationMs : 0) + firstPts;
+        s.outAbsMs = rEndMs; // OUT snaps to the next RAP for now
+
+        const bool reencIn = (rNextMs - s.inAbsMs) > kThr;
+        s.copyStartMs = reencIn ? rNextMs : s.inAbsMs;
+        s.copyEndMs = s.outAbsMs;
+
+        s.prerollByte = std::clamp<qint64>(prevByte, 0, sourceSizeBytes);
         s.endByte = std::clamp<qint64>(endByte, 0, sourceSizeBytes);
-        s.endMs = endMs;
-        s.prerollByte = std::clamp<qint64>(s.prerollByte, 0, sourceSizeBytes);
-        s.rNextByte = std::clamp<qint64>(s.rNextByte, 0, sourceSizeBytes);
 
-        s.reencode = (s.rNextMs - s.inAbsMs) > kReencodeThresholdMs;
-
-        if (s.endByte > s.prerollByte && s.endMs > s.inAbsMs)
+        // copyStart<=copyEnd always; when equal (segment within one GOP) the copy
+        // is empty and the lead-in re-encode [IN, copyStart) covers the whole span.
+        if (s.endByte > s.prerollByte && s.outAbsMs > s.inAbsMs)
             out.push_back(s);
     }
     return out;
@@ -207,19 +224,26 @@ bool MmtsTsExporter::exportTs(const QString& srcPath, const QString& dstPath,
     std::vector<uint8_t> buf;
     buf.reserve(kChunk * 2);
 
+    constexpr qint64 kThr = 20;
     for (const Segment& seg : plan) {
-        std::vector<HevcReencoder::Au> reAus;
+        std::vector<HevcReencoder::Au> leadIn, tail;
         qint64 effInMs = seg.inAbsMs;
-        if (seg.reencode) {
+        qint64 effOutMs = seg.outAbsMs;
+
+        // Lead-in re-encode [IN, copyStart) (also the whole segment when copy is empty).
+        if (seg.copyStartMs - seg.inAbsMs > kThr) {
             QString rerr;
-            if (!reenc.reencode(srcPath, map, seg.inAbsMs - firstPts, seg.rNextMs - firstPts, reAus, &rerr)) {
-                // Fall back to RAP-aligned IN for this segment.
-                reAus.clear();
-                effInMs = seg.rNextMs;
-            }
+            if (!reenc.reencode(srcPath, map, seg.inAbsMs - firstPts, seg.copyStartMs - firstPts, leadIn, &rerr))
+                effInMs = seg.copyStartMs; // fall back: start at the copy RAP
+        }
+        // Tail re-encode [copyEnd, OUT).
+        if (seg.outAbsMs - seg.copyEndMs > kThr) {
+            QString rerr;
+            if (!reenc.reencode(srcPath, map, seg.copyEndMs - firstPts, seg.outAbsMs - firstPts, tail, &rerr))
+                effOutMs = seg.copyEndMs; // fall back: end at the copy RAP
         }
 
-        remuxer.setSegment(&reAus, seg.rNextMs, effInMs, firstPts);
+        remuxer.setSegment(&leadIn, &tail, seg.copyStartMs, seg.copyEndMs, effInMs, effOutMs, firstPts);
         remuxer.setOffsetMs(effInMs - desiredStartMs);
         demuxer.resetStreams();
         ifs.clear();
@@ -266,7 +290,8 @@ bool MmtsTsExporter::exportTs(const QString& srcPath, const QString& dstPath,
             }
         }
 
-        desiredStartMs += (seg.endMs - effInMs);
+        remuxer.finalizeSegment(); // inject lead-in (if not yet) and the tail
+        desiredStartMs += (effOutMs - effInMs);
     }
 
     ofs.flush();
