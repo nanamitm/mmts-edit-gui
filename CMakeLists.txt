@@ -38,7 +38,7 @@ set(DANTTO4K_SOURCES
     mhShortEventDescriptor mhSimpleApplicationLocationDescriptor mhSiParameterDescriptor
     mhStreamIdentificationDescriptor
     mhTot mhTransportProtocolDescriptor mmtDescriptorFactory mmtDescriptors
-    mmtGeneralLocationInfo mmtp mmtStream mmtTableFactory mmtTlvDemuxer mpt mpu
+    mmtGeneralLocationInfo mmtp mmtsMapWriter mmtStream mmtTableFactory mmtTlvDemuxer mpt mpu
     mpuApplicationProcessor mpuAudioProcessor mpuExtendedTimestampDescriptor
     mpuProcessorFactory mpuSubtitleProcessor mpuTimestampDescriptor mpuVideoProcessor
     multimediaServiceInformationDescriptor networkNameDescriptor nit ntp paMessage
@@ -79,7 +79,8 @@ set(MODEL_SRC
     src/model/MmtsExporter.cpp src/model/MmtsExporter.h)
 set(DECODE_SRC
     src/decode/MmtsVideoDecoder.cpp    src/decode/MmtsVideoDecoder.h
-    src/decode/MmtsDecodeController.cpp src/decode/MmtsDecodeController.h)
+    src/decode/MmtsDecodeController.cpp src/decode/MmtsDecodeController.h
+    src/decode/MmtsMapBuilder.cpp      src/decode/MmtsMapBuilder.h)
 set(UI_SRC
     src/ui/MainWindow.cpp    src/ui/MainWindow.h
     src/ui/PreviewWidget.cpp src/ui/PreviewWidget.h
@@ -137,6 +138,19 @@ add_executable(mmts-edit-test
     src/model/MmtsEdit.cpp src/model/MmtsEdit.h)
 target_include_directories(mmts-edit-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/model")
 target_link_libraries(mmts-edit-test PRIVATE Qt6::Core)
+
+# .mmtsmap generation test (uses dantto4k; no ffmpeg).
+add_executable(mmts-mapbuild-test
+    tests/mapbuild_test.cpp
+    src/model/MmtsMap.cpp src/model/MmtsMap.h
+    src/decode/MmtsMapBuilder.cpp src/decode/MmtsMapBuilder.h
+    ${DANTTO4K_SRC_FILES})
+target_compile_definitions(mmts-mapbuild-test PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
+target_include_directories(mmts-mapbuild-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
+target_link_libraries(mmts-mapbuild-test PRIVATE Qt6::Core)
+if(WIN32)
+    target_link_libraries(mmts-mapbuild-test PRIVATE Winscard ws2_32)
+endif()
 
 # .mmts export (RAP-aligned copy) test (no ffmpeg).
 add_executable(mmts-export-test

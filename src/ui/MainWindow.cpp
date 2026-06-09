@@ -2,6 +2,7 @@
 
 #include "MmtsDecodeController.h"
 #include "MmtsExporter.h"
+#include "MmtsMapBuilder.h"
 #include "PreviewWidget.h"
 
 #include <QAction>
@@ -289,12 +290,23 @@ bool MainWindow::openEdit(const QString& path)
 
 bool MainWindow::openMedia(const QString& path)
 {
-    QString mapPath = path + "map"; // sample.mmts -> sample.mmtsmap
+    const QString mapPath = path + "map"; // sample.mmts -> sample.mmtsmap
     if (!QFileInfo::exists(mapPath)) {
-        QMessageBox::warning(this, "Open Media Failed",
-                             QString("Sidecar map not found: %1\n\nGenerate it with dantto4k --write-mmtsmap-only.").arg(mapPath));
-        return false;
+        const auto answer = QMessageBox::question(
+            this, "Create Map",
+            QString("No .mmtsmap sidecar found for:\n%1\n\nCreate it now? This scans the whole "
+                    "file and may take a while.").arg(QFileInfo(path).fileName()),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (answer != QMessageBox::Yes)
+            return false;
+        buildMapThenOpen(path, mapPath);
+        return true;
     }
+    return openMediaWithMap(path, mapPath);
+}
+
+bool MainWindow::openMediaWithMap(const QString& path, const QString& mapPath)
+{
     if (!openMap(mapPath))
         return false;
 
@@ -302,6 +314,47 @@ bool MainWindow::openMedia(const QString& path)
     statusBar()->showMessage(QString("Opening %1 ...").arg(path));
     m_decode->openMedia(path, m_map); // async; UI continues in onDecoderOpened
     return true;
+}
+
+void MainWindow::buildMapThenOpen(const QString& path, const QString& mapPath)
+{
+    auto* thread = new QThread(this);
+    auto* worker = new MmtsMapBuildWorker;
+    worker->moveToThread(thread);
+    worker->configure(path, mapPath);
+
+    auto* dlg = new QProgressDialog("Creating .mmtsmap (scanning file)...", "Cancel", 0, 100, this);
+    dlg->setWindowModality(Qt::WindowModal);
+    dlg->setMinimumDuration(0);
+    dlg->setAutoClose(false);
+    dlg->setAutoReset(false);
+
+    connect(thread, &QThread::started, worker, &MmtsMapBuildWorker::run);
+    connect(worker, &MmtsMapBuildWorker::progress, this, [dlg](qint64 done, qint64 total) {
+        if (dlg->wasCanceled() || total <= 0)
+            return;
+        dlg->setValue(static_cast<int>(done * 100 / total));
+    });
+    connect(dlg, &QProgressDialog::canceled, worker, &MmtsMapBuildWorker::cancel, Qt::DirectConnection);
+    connect(worker, &MmtsMapBuildWorker::finished, this,
+            [this, dlg, thread, path, mapPath](bool ok, const QString& err) {
+        dlg->close();
+        dlg->deleteLater();
+        if (ok) {
+            statusBar()->showMessage(QString("Created %1").arg(mapPath));
+            openMediaWithMap(path, mapPath);
+        } else if (err != QLatin1String("Cancelled")) {
+            QMessageBox::warning(this, "Create Map Failed", err);
+        } else {
+            statusBar()->showMessage("Map creation cancelled");
+        }
+        thread->quit();
+    });
+    connect(thread, &QThread::finished, worker, &QObject::deleteLater);
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+
+    dlg->show();
+    thread->start();
 }
 
 void MainWindow::onDecoderOpened(bool ok, qint64 durationMs, double fps, const QString& error)

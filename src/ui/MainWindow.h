@@ -29,6 +29,8 @@ public:
     bool openMedia(const QString& path);
 
 private:
+    bool openMediaWithMap(const QString& path, const QString& mapPath);
+    void buildMapThenOpen(const QString& path, const QString& mapPath);
     void openMapDialog();
     void openEditDialog();
     void openMediaDialog();
