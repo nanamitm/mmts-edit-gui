@@ -1,4 +1,6 @@
 build*/
+thirdparty/ffmpeg/
+thirdparty/*.zip
 *.user
 *.suo
 *.obj

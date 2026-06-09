@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QMetaType>
 #include <QString>
 #include <QVector>
 #include <cstdint>
@@ -43,6 +44,8 @@ struct MmtsMap {
     QVector<MmtsPoint> rapPoints;
     QVector<MmtsPoint> seekPoints;
 };
+
+Q_DECLARE_METATYPE(MmtsMap)
 
 class MmtsMapReader {
 public:
