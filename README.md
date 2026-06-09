@@ -23,8 +23,8 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
   各区間を demux→dantto4k の RemuxerHandler で再多重化（HEVC+AAC を TS 化、再エンコード
   なし）。区間ごとに PTS/DTS を再ベースし、**継ぎ目のタイムスタンプを連続化**するため、
   汎用プレイヤーでもなめらかに再生できる（出力 TS の総尺＝各区間尺の合計）。tsduck を
-  静的リンクして GUI 内で実行。フレーム精度のスマートレンダリング（境界 GOP の再
-  エンコード）は今後の課題。なお現状、字幕は出力に含めない。
+  静的リンクして GUI 内で実行。字幕（ARIB字幕）も区間オフセットを適用して出力に含める。
+  フレーム精度のスマートレンダリング（境界 GOP の再エンコード）は今後の課題。
 
 ## 使い方
 
@@ -76,8 +76,8 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
   各区間を demux→TS 再多重化し（HEVC+AAC、再エンコードなし）、PTS/DTS を連続化します。
   キャンセル付きの進捗ダイアログを表示します。
 - 継ぎ目のタイムスタンプが連続化されるため、汎用プレイヤーでもなめらかに再生できます
-  （出力の総尺＝各区間尺の合計）。カット点は RAP 境界にスナップします。字幕は現状
-  出力に含めません。
+  （出力の総尺＝各区間尺の合計）。カット点は RAP 境界にスナップします。字幕（ARIB字幕）も
+  含まれます。
 
 ## 依存関係
 
@@ -113,13 +113,12 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
 src/
   main.cpp
   model/    MmtsMap, MmtsEdit          (.mmtsmap / .mmtsedit のパース、EDL モデル)
-            MmtsExporter               (RAP 境界での .mmts 書き出し)
   decode/   MmtsVideoDecoder           (フレーム精度 HEVC デコード)
-            MmtsDecodeController        (ワーカースレッド + coalescing + フレームキャッシュ)
+            MmtsDecodeController        (ワーカースレッド + 先読み + フレームキャッシュ)
             MmtsMapBuilder             (dantto4k スキャンで .mmtsmap 生成)
             MmtsTsExporter             (EDL を連続 PTS の MPEG-2 TS に再多重化)
   ui/       MainWindow, PreviewWidget, TimelineWidget
-tests/      decode_test, controller_test, edit_test, export_test,
+tests/      decode_test, controller_test, edit_test,
             mapbuild_test, ts_export_test  (ヘッドレスのスモークテスト)
 ```
 

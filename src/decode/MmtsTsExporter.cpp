@@ -13,49 +13,18 @@
 
 namespace {
 
-// Subclass of the dantto4k TS remuxer that rebases each segment's timestamps so
-// the output stays contiguous, and suppresses NTP-driven PCR / subtitles (which
-// would otherwise carry the original, non-contiguous clock).
+// The dantto4k TS remuxer with per-segment timestamp rebasing. The base class
+// applies setPtsOffset() to all emitted PTS/DTS/PCR (video, audio and subtitle),
+// so the output timeline is contiguous. NTP-driven PCR is suppressed so PCR
+// comes only from the rebased video DTS.
 class RebasingRemuxer : public RemuxerHandler {
 public:
     explicit RebasingRemuxer(MmtTlv::MmtTlvDemuxer& demuxer) : RemuxerHandler(demuxer) {}
 
-    void setOffsetMs(qint64 offsetMs) { m_offsetMs = offsetMs; }
+    // offsetMs is the segment's source start minus its target start (>= 0).
+    void setOffsetMs(qint64 offsetMs) { setPtsOffset(offsetMs * 90); } // ms -> 90kHz
 
-    void onVideoData(const MmtTlv::MmtStream& stream, const MmtTlv::MfuData& mfu) override
-    {
-        MmtTlv::MfuData m = mfu;
-        rebase(stream, m);
-        RemuxerHandler::onVideoData(stream, m);
-    }
-    void onAudioData(const MmtTlv::MmtStream& stream, const MmtTlv::MfuData& mfu) override
-    {
-        MmtTlv::MfuData m = mfu;
-        rebase(stream, m);
-        RemuxerHandler::onAudioData(stream, m);
-    }
-    // Drop subtitles (their timing is derived from the original absolute clock,
-    // not from mfu.pts, so rebasing here is not enough). v1 limitation.
-    void onSubtitleData(const MmtTlv::MmtStream&, const MmtTlv::MfuData&) override {}
-    // Suppress NTP-driven PCR so PCR comes only from the rebased video DTS.
     void onNtp(const MmtTlv::NTPv4&) override {}
-
-private:
-    void rebase(const MmtTlv::MmtStream& stream, MmtTlv::MfuData& m) const
-    {
-        if (m_offsetMs == 0)
-            return;
-        const auto& tb = stream.getTimeBase();
-        if (tb.num <= 0 || tb.den <= 0)
-            return;
-        const int64_t ticks = m_offsetMs * static_cast<int64_t>(tb.den) / (1000LL * tb.num);
-        if (m.pts != MmtTlv::NOPTS_VALUE)
-            m.pts -= ticks;
-        if (m.dts != MmtTlv::NOPTS_VALUE)
-            m.dts -= ticks;
-    }
-
-    qint64 m_offsetMs = 0;
 };
 
 qint64 firstRapAtOrAfter(const QVector<MmtsPoint>& raps, qint64 t, qint64& timeOut, qint64 fallbackOffset, qint64 fallbackTime)
