@@ -154,8 +154,15 @@ MainWindow::MainWindow(QWidget* parent)
 
     auto* prevFrameBtn = new QPushButton("-1f", this);
     auto* nextFrameBtn = new QPushButton("+1f", this);
-    prevFrameBtn->setToolTip("Step one frame back");
-    nextFrameBtn->setToolTip("Step one frame forward");
+    prevFrameBtn->setToolTip("Step one frame back (hold to repeat)");
+    nextFrameBtn->setToolTip("Step one frame forward (hold to repeat)");
+    // Hold to repeat. Decode requests coalesce, so this advances about one frame
+    // per decode while held rather than flooding the worker.
+    for (auto* b : { prevFrameBtn, nextFrameBtn }) {
+        b->setAutoRepeat(true);
+        b->setAutoRepeatDelay(350);
+        b->setAutoRepeatInterval(80);
+    }
     connect(prevFrameBtn, &QPushButton::clicked, this, [this] { stepFrame(-1); });
     connect(nextFrameBtn, &QPushButton::clicked, this, [this] { stepFrame(1); });
 
