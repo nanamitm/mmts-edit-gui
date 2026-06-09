@@ -21,6 +21,11 @@ Current scope:
   Delete build a non-destructive cut list. The edited program is the
   concatenation of the segments in order.
 - Save / load a `.mmtsedit` sidecar (version 1, `timeline` = ordered segments).
+- Export a new `.mmts` from the edit (`File > Export Edited Media...`): copies the
+  RAP-aligned source byte ranges for each segment (no re-encode). A single
+  segment yields a clean contiguous clip; multiple segments keep their original
+  MMT timestamps, so seams carry a PTS discontinuity (players resync at each
+  segment's RAP). Contiguous-timestamp / frame-accurate export is future work.
 
 `File > Open Media...` opens `sample.mmts` and auto-loads `sample.mmtsmap`
 (generate the map with `dantto4k --write-mmtsmap-only sample.mmts`).

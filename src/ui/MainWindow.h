@@ -33,6 +33,7 @@ private:
     void openEditDialog();
     void openMediaDialog();
     void saveEditDialog();
+    void exportMediaDialog();
     void populateTables();
     void populateTrackTable();
     void populateMptTable();

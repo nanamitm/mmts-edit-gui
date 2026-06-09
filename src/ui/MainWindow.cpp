@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "MmtsDecodeController.h"
+#include "MmtsExporter.h"
 #include "PreviewWidget.h"
 
 #include <QAction>
@@ -9,17 +10,16 @@
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QHBoxLayout>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QThread>
 #include <QToolBar>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -51,12 +51,15 @@ MainWindow::MainWindow(QWidget* parent)
     connect(openEditAction, &QAction::triggered, this, &MainWindow::openEditDialog);
     auto* saveEditAction = new QAction("Save Edit...", this);
     connect(saveEditAction, &QAction::triggered, this, &MainWindow::saveEditDialog);
+    auto* exportAction = new QAction("Export Edited Media...", this);
+    connect(exportAction, &QAction::triggered, this, &MainWindow::exportMediaDialog);
     auto* fileMenu = menuBar()->addMenu("File");
     fileMenu->addAction(openMediaAction);
     fileMenu->addAction(openAction);
     fileMenu->addAction(openEditAction);
     fileMenu->addSeparator();
     fileMenu->addAction(saveEditAction);
+    fileMenu->addAction(exportAction);
 
     m_inSpin = new QSpinBox(this);
     m_inSpin->setRange(0, 24 * 60 * 60 * 1000);
@@ -444,6 +447,74 @@ void MainWindow::saveEditDialog()
         return;
     }
     statusBar()->showMessage(QString("Saved %1 (%2 segments)").arg(path).arg(m_segments.size()));
+}
+
+void MainWindow::exportMediaDialog()
+{
+    if (m_mediaPath.isEmpty() || m_map.path.isEmpty()) {
+        QMessageBox::information(this, "Export", "Open the media (.mmts) first.");
+        return;
+    }
+    if (m_segments.isEmpty()) {
+        QMessageBox::information(this, "Export", "Add at least one segment first.");
+        return;
+    }
+
+    const qint64 srcSize = QFileInfo(m_mediaPath).size();
+    const auto ranges = MmtsExporter::planRanges(m_map, m_segments, srcSize);
+    if (ranges.isEmpty()) {
+        QMessageBox::warning(this, "Export", "Could not map any segment to RAP byte ranges.");
+        return;
+    }
+
+    const QFileInfo srcInfo(m_mediaPath);
+    const QString def = srcInfo.absolutePath() + "/" + srcInfo.completeBaseName() + "_edited.mmts";
+    const QString path = QFileDialog::getSaveFileName(this, "Export Edited MMTS", def, "MMTS (*.mmts)");
+    if (path.isEmpty())
+        return;
+    if (QFileInfo(path).absoluteFilePath() == srcInfo.absoluteFilePath()) {
+        QMessageBox::warning(this, "Export", "Choose a different file from the source.");
+        return;
+    }
+
+    auto* thread = new QThread(this);
+    auto* worker = new MmtsExportWorker;
+    worker->moveToThread(thread);
+    worker->configure(m_mediaPath, path, ranges);
+
+    auto* dlg = new QProgressDialog("Exporting edited MMTS...", "Cancel", 0, 100, this);
+    dlg->setWindowModality(Qt::WindowModal);
+    dlg->setMinimumDuration(0);
+    dlg->setAutoClose(false);
+    dlg->setAutoReset(false);
+
+    connect(thread, &QThread::started, worker, &MmtsExportWorker::run);
+    connect(worker, &MmtsExportWorker::progress, this, [dlg](qint64 done, qint64 total) {
+        if (total > 0)
+            dlg->setValue(static_cast<int>(done * 100 / total));
+    });
+    connect(dlg, &QProgressDialog::canceled, worker, &MmtsExportWorker::cancel);
+    connect(worker, &MmtsExportWorker::finished, this, [this, dlg, thread, path](bool ok, const QString& err) {
+        dlg->close();
+        dlg->deleteLater();
+        if (ok)
+            statusBar()->showMessage(QString("Exported %1").arg(path));
+        else if (err != QLatin1String("Cancelled"))
+            QMessageBox::warning(this, "Export Failed", err);
+        else
+            statusBar()->showMessage("Export cancelled");
+        thread->quit();
+    });
+    connect(thread, &QThread::finished, worker, &QObject::deleteLater);
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+
+    qint64 totalBytes = 0;
+    for (const auto& r : ranges)
+        totalBytes += r.length();
+    statusBar()->showMessage(QString("Exporting %1 segments, %2 MB...")
+                                 .arg(ranges.size()).arg(totalBytes / (1024 * 1024)));
+    dlg->show();
+    thread->start();
 }
 
 qint64 MainWindow::sourceDurationMs() const
