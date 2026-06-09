@@ -72,6 +72,50 @@ set(EXT_INCLUDE
     "${DANTTO4K_DIR}/thirdparty/asio/asio/include"
     "${FFMPEG_DIR}/include")
 
+# ---------------------------------------------------------------------------
+# tsduck (MMT -> MPEG-2 TS remux, used by the .ts exporter). Reuses the static
+# libs already built under dantto4k/thirdparty/tsduck.
+# ---------------------------------------------------------------------------
+set(TSDUCK_ROOT "${DANTTO4K_DIR}/thirdparty/tsduck")
+if(NOT EXISTS "${TSDUCK_ROOT}/bin/include/tsduck.h")
+    message(FATAL_ERROR "tsduck not found/built at ${TSDUCK_ROOT} (need bin/include + bin/<Config>-x64 libs).")
+endif()
+file(GLOB_RECURSE _ts_hdrs "${TSDUCK_ROOT}/src/libtscore/*.h" "${TSDUCK_ROOT}/src/libtsduck/*.h")
+set(TSDUCK_INCLUDE "")
+foreach(_h ${_ts_hdrs})
+    if(NOT _h MATCHES "/(unix|linux|mac|bsd|private|__pycache__)/")
+        get_filename_component(_d "${_h}" DIRECTORY)
+        list(APPEND TSDUCK_INCLUDE "${_d}")
+    endif()
+endforeach()
+list(REMOVE_DUPLICATES TSDUCK_INCLUDE)
+list(APPEND TSDUCK_INCLUDE "${TSDUCK_ROOT}/bin/include")
+set(TSDUCK_LIBDIR "${TSDUCK_ROOT}/bin/$<IF:$<CONFIG:Debug>,Debug,Release>-x64")
+
+# dantto4k's TS remuxer (depends on tsduck) -- relaxed warnings like the rest.
+set(REMUX_SRC "${DANTTO4K_DIR}/src/remuxerHandler.cpp")
+if(MSVC)
+    set_source_files_properties(${REMUX_SRC} PROPERTIES
+        COMPILE_OPTIONS "/permissive;/wd4996;/wd4244;/wd4267;/wd4018;/wd4800;/wd4819")
+endif()
+
+# Adds tsduck include/defs/libs (with the required /WHOLEARCHIVE) to a target.
+function(enable_tsduck tgt)
+    target_compile_definitions(${tgt} PRIVATE TSDUCK_STATIC_LIBRARY TSCORE_STATIC_LIBRARY)
+    target_include_directories(${tgt} PRIVATE ${TSDUCK_INCLUDE})
+    target_link_directories(${tgt} PRIVATE "${TSDUCK_LIBDIR}")
+    target_link_libraries(${tgt} PRIVATE tsducklib tscorelib)
+    target_link_options(${tgt} PRIVATE "/WHOLEARCHIVE:tsducklib.lib" "/WHOLEARCHIVE:tscorelib.lib")
+    if(MSVC)
+        target_compile_options(${tgt} PRIVATE /wd4819 /Wv:17)
+    endif()
+endfunction()
+
+# TS exporter sources (need tsduck).
+set(TS_SRC
+    src/decode/MmtsTsExporter.cpp src/decode/MmtsTsExporter.h
+    ${REMUX_SRC})
+
 # Project source groups.
 set(MODEL_SRC
     src/model/MmtsMap.cpp  src/model/MmtsMap.h
@@ -91,7 +135,7 @@ set(UI_SRC
 # ---------------------------------------------------------------------------
 add_executable(mmts-edit-gui WIN32
     src/main.cpp
-    ${MODEL_SRC} ${DECODE_SRC} ${UI_SRC}
+    ${MODEL_SRC} ${DECODE_SRC} ${UI_SRC} ${TS_SRC}
     ${DANTTO4K_SRC_FILES})
 target_compile_definitions(mmts-edit-gui PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
 target_include_directories(mmts-edit-gui PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
@@ -100,6 +144,7 @@ target_link_libraries(mmts-edit-gui PRIVATE Qt6::Widgets avcodec avutil swscale)
 if(WIN32)
     target_link_libraries(mmts-edit-gui PRIVATE Winscard ws2_32)
 endif()
+enable_tsduck(mmts-edit-gui)
 
 # ---------------------------------------------------------------------------
 # Headless tests
@@ -138,6 +183,23 @@ add_executable(mmts-edit-test
     src/model/MmtsEdit.cpp src/model/MmtsEdit.h)
 target_include_directories(mmts-edit-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/model")
 target_link_libraries(mmts-edit-test PRIVATE Qt6::Core)
+
+# TS export test (uses dantto4k + tsduck + ffmpeg/avutil).
+add_executable(mmts-ts-export-test
+    tests/ts_export_test.cpp
+    src/model/MmtsMap.cpp src/model/MmtsMap.h
+    src/model/MmtsEdit.cpp src/model/MmtsEdit.h
+    src/decode/MmtsTsExporter.cpp src/decode/MmtsTsExporter.h
+    ${REMUX_SRC}
+    ${DANTTO4K_SRC_FILES})
+target_compile_definitions(mmts-ts-export-test PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
+target_include_directories(mmts-ts-export-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
+target_link_directories(mmts-ts-export-test PRIVATE "${FFMPEG_DIR}/lib")
+target_link_libraries(mmts-ts-export-test PRIVATE Qt6::Core avcodec avutil swscale)
+if(WIN32)
+    target_link_libraries(mmts-ts-export-test PRIVATE Winscard ws2_32)
+endif()
+enable_tsduck(mmts-ts-export-test)
 
 # .mmtsmap generation test (uses dantto4k; no ffmpeg).
 add_executable(mmts-mapbuild-test

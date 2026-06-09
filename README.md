@@ -19,11 +19,12 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
 - **複数区間 EDL**: Segments パネルでカット一覧を管理。Add / Split @ playhead /
   Delete で非破壊のカットリストを作成。編集後のプログラムは区間を順に連結したもの。
 - `.mmtsedit` サイドカー（version 1、`timeline` = 順序付き区間）の保存/読込。
-- 編集結果から新しい `.mmts` を書き出し（`File > Export Edited Media...`）:
-  各区間の RAP 境界バイト範囲をコピー（再エンコードなし）。単一区間はクリーンな
-  連続クリップになる。複数区間は元の MMT タイムスタンプを保持するため、継ぎ目に
-  PTS 不連続が残る（プレイヤーは各区間先頭の RAP で再同期）。タイムスタンプ連続化／
-  フレーム精度の書き出しは今後の課題。
+- 編集結果を **MPEG-2 TS(.ts) として書き出し**（`File > Export Edited Media...`）:
+  各区間を demux→dantto4k の RemuxerHandler で再多重化（HEVC+AAC を TS 化、再エンコード
+  なし）。区間ごとに PTS/DTS を再ベースし、**継ぎ目のタイムスタンプを連続化**するため、
+  汎用プレイヤーでもなめらかに再生できる（出力 TS の総尺＝各区間尺の合計）。tsduck を
+  静的リンクして GUI 内で実行。フレーム精度のスマートレンダリング（境界 GOP の再
+  エンコード）は今後の課題。なお現状、字幕は出力に含めない。
 
 ## 使い方
 
@@ -69,13 +70,14 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
 - `File > Open Edit...` で復元。参照先のマップ**とソースメディア**を読み込むため、
   すぐにプレビューが使えます。
 
-### 5. 新しい `.mmts` を書き出す
+### 5. TS を書き出す
 
-- `File > Export Edited Media...` で、区間だけを含む新しい `.mmts` を生成します。
-  RAP 境界のソースバイト範囲をコピーする方式（再エンコードなし＝高速・無劣化）。
+- `File > Export Edited Media...` で、区間だけを連結した **MPEG-2 TS(.ts)** を生成します。
+  各区間を demux→TS 再多重化し（HEVC+AAC、再エンコードなし）、PTS/DTS を連続化します。
   キャンセル付きの進捗ダイアログを表示します。
-- 単一区間はクリーンな連続クリップになります。複数区間では元の MMT タイムスタンプを
-  保持するため、各継ぎ目に PTS 不連続が残ります（プレイヤーは次区間の RAP で再同期）。
+- 継ぎ目のタイムスタンプが連続化されるため、汎用プレイヤーでもなめらかに再生できます
+  （出力の総尺＝各区間尺の合計）。カット点は RAP 境界にスナップします。字幕は現状
+  出力に含めません。
 
 ## 依存関係
 
@@ -85,6 +87,9 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
 - ビルド済み ffmpeg 開発ライブラリ（LGPL shared）を `thirdparty/ffmpeg`
   （`include/lib/bin`）に配置。場所は `-DDANTTO4K_DIR=...` / `-DFFMPEG_DIR=...` で
   上書き可能。
+- tsduck（TS 出力用）。dantto4k の `thirdparty/tsduck` にビルド済みの静的ライブラリ
+  （`bin/<Config>-x64/tsducklib.lib` `tscorelib.lib` と `bin/include`）が必要。dantto4k を
+  一度ビルドすれば生成される。
 
 `.mmtsedit` の形式（`timeline` はソースのカット区間の順序付きリスト。編集後の
 プログラムはその連結）:
@@ -112,9 +117,10 @@ src/
   decode/   MmtsVideoDecoder           (フレーム精度 HEVC デコード)
             MmtsDecodeController        (ワーカースレッド + coalescing + フレームキャッシュ)
             MmtsMapBuilder             (dantto4k スキャンで .mmtsmap 生成)
+            MmtsTsExporter             (EDL を連続 PTS の MPEG-2 TS に再多重化)
   ui/       MainWindow, PreviewWidget, TimelineWidget
-tests/      decode_test, controller_test, edit_test,
-            export_test, mapbuild_test  (ヘッドレスのスモークテスト)
+tests/      decode_test, controller_test, edit_test, export_test,
+            mapbuild_test, ts_export_test  (ヘッドレスのスモークテスト)
 ```
 
 ## ビルド

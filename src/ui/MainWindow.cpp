@@ -3,6 +3,7 @@
 #include "MmtsDecodeController.h"
 #include "MmtsExporter.h"
 #include "MmtsMapBuilder.h"
+#include "MmtsTsExporter.h"
 #include "PreviewWidget.h"
 
 #include <QAction>
@@ -514,46 +515,42 @@ void MainWindow::exportMediaDialog()
     }
 
     const qint64 srcSize = QFileInfo(m_mediaPath).size();
-    const auto ranges = MmtsExporter::planRanges(m_map, m_segments, srcSize);
-    if (ranges.isEmpty()) {
+    const auto plan = MmtsTsExporter::planSegments(m_map, m_segments, srcSize);
+    if (plan.isEmpty()) {
         QMessageBox::warning(this, "Export", "Could not map any segment to RAP byte ranges.");
         return;
     }
 
     const QFileInfo srcInfo(m_mediaPath);
-    const QString def = srcInfo.absolutePath() + "/" + srcInfo.completeBaseName() + "_edited.mmts";
-    const QString path = QFileDialog::getSaveFileName(this, "Export Edited MMTS", def, "MMTS (*.mmts)");
+    const QString def = srcInfo.absolutePath() + "/" + srcInfo.completeBaseName() + "_edited.ts";
+    const QString path = QFileDialog::getSaveFileName(this, "Export Edited TS", def, "MPEG-2 TS (*.ts)");
     if (path.isEmpty())
         return;
-    if (QFileInfo(path).absoluteFilePath() == srcInfo.absoluteFilePath()) {
-        QMessageBox::warning(this, "Export", "Choose a different file from the source.");
-        return;
-    }
 
     auto* thread = new QThread(this);
-    auto* worker = new MmtsExportWorker;
+    auto* worker = new MmtsTsExportWorker;
     worker->moveToThread(thread);
-    worker->configure(m_mediaPath, path, ranges);
+    worker->configure(m_mediaPath, path, m_map, m_segments, srcSize);
 
-    auto* dlg = new QProgressDialog("Exporting edited MMTS...", "Cancel", 0, 100, this);
+    auto* dlg = new QProgressDialog("Exporting edited TS (remuxing)...", "Cancel", 0, 100, this);
     dlg->setWindowModality(Qt::WindowModal);
     dlg->setMinimumDuration(0);
     dlg->setAutoClose(false);
     dlg->setAutoReset(false);
 
-    connect(thread, &QThread::started, worker, &MmtsExportWorker::run);
-    connect(worker, &MmtsExportWorker::progress, this, [dlg](qint64 done, qint64 total) {
-        // Ignore progress that is still queued after a cancel: calling setValue()
-        // on a cancelled QProgressDialog would pop it back up momentarily.
+    connect(thread, &QThread::started, worker, &MmtsTsExportWorker::run);
+    connect(worker, &MmtsTsExportWorker::progress, this, [dlg](qint64 done, qint64 total) {
+        // Ignore progress still queued after a cancel: setValue() on a cancelled
+        // QProgressDialog would pop it back up momentarily.
         if (dlg->wasCanceled() || total <= 0)
             return;
         dlg->setValue(static_cast<int>(done * 100 / total));
     });
     // Direct connection: cancel() only flips an atomic, and the worker thread is
-    // busy copying (not running its event loop), so a queued call would not be
-    // delivered until the copy finished. Direct lets the GUI thread set it now.
-    connect(dlg, &QProgressDialog::canceled, worker, &MmtsExportWorker::cancel, Qt::DirectConnection);
-    connect(worker, &MmtsExportWorker::finished, this, [this, dlg, thread, path](bool ok, const QString& err) {
+    // busy (not running its event loop), so a queued call would not be delivered
+    // until it finished. Direct lets the GUI thread set it now.
+    connect(dlg, &QProgressDialog::canceled, worker, &MmtsTsExportWorker::cancel, Qt::DirectConnection);
+    connect(worker, &MmtsTsExportWorker::finished, this, [this, dlg, thread, path](bool ok, const QString& err) {
         dlg->close();
         dlg->deleteLater();
         if (ok)
@@ -567,11 +564,7 @@ void MainWindow::exportMediaDialog()
     connect(thread, &QThread::finished, worker, &QObject::deleteLater);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
 
-    qint64 totalBytes = 0;
-    for (const auto& r : ranges)
-        totalBytes += r.length();
-    statusBar()->showMessage(QString("Exporting %1 segments, %2 MB...")
-                                 .arg(ranges.size()).arg(totalBytes / (1024 * 1024)));
+    statusBar()->showMessage(QString("Exporting %1 segments to TS...").arg(plan.size()));
     dlg->show();
     thread->start();
 }
