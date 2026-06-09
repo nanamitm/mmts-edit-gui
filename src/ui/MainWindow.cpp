@@ -235,7 +235,7 @@ bool MainWindow::openMap(const QString& path)
     const int maximumMs = static_cast<int>(qMin(durationMs, fullRangeMs));
     m_inSpin->setMaximum(maximumMs);
     m_outSpin->setMaximum(maximumMs);
-    setSegments({ EditSegment{0, durationMs} }, 0); // default: whole program
+    setSegments({}, -1); // start empty: the user adds the ranges to keep
     populateTables();
     statusBar()->showMessage(QString("Loaded %1").arg(path));
     return true;
