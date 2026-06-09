@@ -648,31 +648,34 @@ void MainWindow::updateSelectedFromSpins()
     syncTimeline();
 }
 
+// Selects a segment to edit without ever creating one: keeps the current
+// selection, otherwise falls back to the first segment. Returns false only when
+// there are no segments at all (so Set In/Out never silently add a new track).
 bool MainWindow::ensureSegmentSelected()
 {
     if (m_selectedSegment >= 0 && m_selectedSegment < m_segments.size())
         return true;
-    const qint64 dur = sourceDurationMs();
-    if (dur <= 0)
-        return false; // no media loaded yet
-    // No segment yet (e.g. all deleted): start one spanning the whole program.
-    m_segments.push_back(EditSegment{0, dur});
-    rebuildSegmentTable();
-    selectSegment(m_segments.size() - 1);
+    if (m_segments.isEmpty())
+        return false;
+    selectSegment(0);
     return m_selectedSegment >= 0;
 }
 
 void MainWindow::setInToCurrent()
 {
-    if (!ensureSegmentSelected())
+    if (!ensureSegmentSelected()) {
+        statusBar()->showMessage("No segment to edit — press Add first");
         return;
+    }
     m_inSpin->setValue(static_cast<int>(m_currentRelMs));
 }
 
 void MainWindow::setOutToCurrent()
 {
-    if (!ensureSegmentSelected())
+    if (!ensureSegmentSelected()) {
+        statusBar()->showMessage("No segment to edit — press Add first");
         return;
+    }
     m_outSpin->setValue(static_cast<int>(m_currentRelMs));
 }
 
