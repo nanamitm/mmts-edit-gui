@@ -44,7 +44,8 @@ public:
     void setSegment(const std::vector<HevcReencoder::Au>* leadIn,
                     const std::vector<HevcReencoder::Au>* tail,
                     qint64 copyStartMs, qint64 copyEndMs,
-                    qint64 inAbsMs, qint64 outAbsMs, qint64 firstPts)
+                    qint64 inAbsMs, qint64 outAbsMs, qint64 firstPts,
+                    bool tailReencoded)
     {
         m_leadIn = leadIn;
         m_tail = tail;
@@ -53,6 +54,7 @@ public:
         m_inAbsMs = inAbsMs;
         m_outAbsMs = outAbsMs;
         m_firstPts = firstPts;
+        m_endUseDts = tailReencoded;
         m_videoStream = nullptr;
         m_leadInDone = false;
     }
@@ -70,8 +72,19 @@ public:
         if (!m_videoStream)
             m_videoStream = &stream;
         const qint64 pts = ptsToMs(mfu.pts, stream);
-        if (pts < m_copyStartMs || pts >= m_copyEndMs)
-            return; // outside the stream-copy range (lead-in is re-encoded)
+        if (pts < m_copyStartMs)
+            return; // before copy start (lead-in is re-encoded)
+        if (m_endUseDts) {
+            // Cut the copy end in DECODE order so the boundary GOP (incl. its
+            // open-GOP RASL leading pictures, which present < rLast but decode
+            // after it) is dropped cleanly; [rLast, OUT) comes from the tail.
+            const qint64 dts = ptsToMs(mfu.dts, stream);
+            const qint64 effDts = (dts >= 0) ? dts : pts;
+            if (effDts >= m_copyEndMs)
+                return;
+        } else if (pts >= m_copyEndMs) {
+            return; // OUT at a RAP: presentation-accurate copy to the boundary
+        }
         ensureLeadIn();
         RemuxerHandler::onVideoData(stream, mfu);
     }
@@ -124,6 +137,7 @@ private:
     qint64 m_inAbsMs = 0, m_outAbsMs = 0, m_firstPts = 0;
     const MmtTlv::MmtStream* m_videoStream = nullptr;
     bool m_leadInDone = false;
+    bool m_endUseDts = false;
 };
 
 } // namespace
@@ -155,21 +169,33 @@ QVector<MmtsTsExporter::Segment> MmtsTsExporter::planSegments(const MmtsMap& map
         }
         if (rNextMs < 0) rNextMs = s.inAbsMs;
 
-        // OUT: RAP at/after OUT (copy end + demux end). OUT-point smart rendering
-        // (re-encoding the tail GOP) is deferred -- splicing a re-encoded tail
-        // after a stream copy hits HEVC parameter-set / open-GOP reference issues.
+        // OUT (frame-accurate): rLast = last RAP at/before OUT (the tail boundary,
+        // an IRAP we can decode-cleanly cut at); rEnd = first RAP at/after OUT
+        // (how far to demux so audio/subtitle up to OUT are captured). The copy
+        // ends at rLast in DECODE order (dts gating drops the boundary GOP incl.
+        // its open-GOP RASL leading pics); [rLast, OUT) is re-encoded as the tail.
+        const qint64 outFaMs = s.outAbsMs; // frame-accurate OUT (kept as-is)
+        qint64 rLastMs = -1;
         qint64 rEndMs = -1;
         qint64 endByte = sourceSizeBytes;
         for (const auto& p : raps) {
-            if (p.timeMs >= s.outAbsMs) { rEndMs = p.timeMs; endByte = static_cast<qint64>(p.offset); break; }
+            if (p.timeMs <= outFaMs) rLastMs = p.timeMs;
+            else { rEndMs = p.timeMs; endByte = static_cast<qint64>(p.offset); break; }
         }
-        if (rEndMs < 0)
-            rEndMs = (map.durationMs > 0 ? map.durationMs : 0) + firstPts;
-        s.outAbsMs = rEndMs; // OUT snaps to the next RAP for now
+        if (rLastMs < 0) rLastMs = outFaMs;
 
         const bool reencIn = (rNextMs - s.inAbsMs) > kThr;
+        const bool reencOut = (outFaMs - rLastMs) > kThr;
         s.copyStartMs = reencIn ? rNextMs : s.inAbsMs;
-        s.copyEndMs = s.outAbsMs;
+        s.copyEndMs = reencOut ? rLastMs : outFaMs;
+        s.outAbsMs = outFaMs;
+
+        // Segment shorter than the copy span (IN/OUT inside one GOP, or copyStart
+        // past copyEnd): no stream copy -- re-encode the whole [IN, OUT) as lead-in.
+        if (s.copyStartMs >= s.copyEndMs) {
+            s.copyStartMs = s.outAbsMs;
+            s.copyEndMs = s.outAbsMs;
+        }
 
         s.prerollByte = std::clamp<qint64>(prevByte, 0, sourceSizeBytes);
         s.endByte = std::clamp<qint64>(endByte, 0, sourceSizeBytes);
@@ -242,8 +268,9 @@ bool MmtsTsExporter::exportTs(const QString& srcPath, const QString& dstPath,
             if (!reenc.reencode(srcPath, map, seg.copyEndMs - firstPts, seg.outAbsMs - firstPts, tail, &rerr))
                 effOutMs = seg.copyEndMs; // fall back: end at the copy RAP
         }
+        const bool tailReencoded = !tail.empty();
 
-        remuxer.setSegment(&leadIn, &tail, seg.copyStartMs, seg.copyEndMs, effInMs, effOutMs, firstPts);
+        remuxer.setSegment(&leadIn, &tail, seg.copyStartMs, seg.copyEndMs, effInMs, effOutMs, firstPts, tailReencoded);
         remuxer.setOffsetMs(effInMs - desiredStartMs);
         demuxer.resetStreams();
         ifs.clear();
