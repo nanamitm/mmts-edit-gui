@@ -54,6 +54,7 @@ private:
     void rebuildSegmentTable();
     void syncTimeline();
     void updateSelectedFromSpins();
+    bool ensureSegmentSelected();
     void setInToCurrent();
     void setOutToCurrent();
     void addSegment();

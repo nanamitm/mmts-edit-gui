@@ -648,16 +648,32 @@ void MainWindow::updateSelectedFromSpins()
     syncTimeline();
 }
 
+bool MainWindow::ensureSegmentSelected()
+{
+    if (m_selectedSegment >= 0 && m_selectedSegment < m_segments.size())
+        return true;
+    const qint64 dur = sourceDurationMs();
+    if (dur <= 0)
+        return false; // no media loaded yet
+    // No segment yet (e.g. all deleted): start one spanning the whole program.
+    m_segments.push_back(EditSegment{0, dur});
+    rebuildSegmentTable();
+    selectSegment(m_segments.size() - 1);
+    return m_selectedSegment >= 0;
+}
+
 void MainWindow::setInToCurrent()
 {
-    if (m_selectedSegment >= 0)
-        m_inSpin->setValue(static_cast<int>(m_currentRelMs));
+    if (!ensureSegmentSelected())
+        return;
+    m_inSpin->setValue(static_cast<int>(m_currentRelMs));
 }
 
 void MainWindow::setOutToCurrent()
 {
-    if (m_selectedSegment >= 0)
-        m_outSpin->setValue(static_cast<int>(m_currentRelMs));
+    if (!ensureSegmentSelected())
+        return;
+    m_outSpin->setValue(static_cast<int>(m_currentRelMs));
 }
 
 void MainWindow::addSegment()
