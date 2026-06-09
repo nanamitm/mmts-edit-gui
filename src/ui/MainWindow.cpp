@@ -490,8 +490,11 @@ void MainWindow::exportMediaDialog()
 
     connect(thread, &QThread::started, worker, &MmtsExportWorker::run);
     connect(worker, &MmtsExportWorker::progress, this, [dlg](qint64 done, qint64 total) {
-        if (total > 0)
-            dlg->setValue(static_cast<int>(done * 100 / total));
+        // Ignore progress that is still queued after a cancel: calling setValue()
+        // on a cancelled QProgressDialog would pop it back up momentarily.
+        if (dlg->wasCanceled() || total <= 0)
+            return;
+        dlg->setValue(static_cast<int>(done * 100 / total));
     });
     // Direct connection: cancel() only flips an atomic, and the worker thread is
     // busy copying (not running its event loop), so a queued call would not be
