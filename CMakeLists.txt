@@ -114,6 +114,7 @@ endfunction()
 # TS exporter sources (need tsduck).
 set(TS_SRC
     src/decode/MmtsTsExporter.cpp src/decode/MmtsTsExporter.h
+    src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
     ${REMUX_SRC})
 
 # Project source groups.
@@ -189,6 +190,7 @@ add_executable(mmts-ts-export-test
     src/model/MmtsMap.cpp src/model/MmtsMap.h
     src/model/MmtsEdit.cpp src/model/MmtsEdit.h
     src/decode/MmtsTsExporter.cpp src/decode/MmtsTsExporter.h
+    src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
     ${REMUX_SRC}
     ${DANTTO4K_SRC_FILES})
 target_compile_definitions(mmts-ts-export-test PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)

@@ -27,12 +27,13 @@ int main(int argc, char** argv)
     }
     const qint64 srcSize = QFileInfo(src).size();
 
-    QVector<EditSegment> segs = { {60000, 120000}, {300000, 360000} };
+    // Frame-accurate IN points (not RAP-aligned) to exercise smart rendering.
+    QVector<EditSegment> segs = { {60050, 120000}, {300100, 360000} };
     const auto plan = MmtsTsExporter::planSegments(map, segs, srcSize);
     for (int i = 0; i < plan.size(); ++i) {
-        std::fprintf(stderr, "seg[%d] byte %lld..%lld  time %lld..%lld ms\n", i,
-                     (long long)plan[i].startByte, (long long)plan[i].endByte,
-                     (long long)plan[i].startMs, (long long)plan[i].endMs);
+        std::fprintf(stderr, "seg[%d] in=%lld rNext=%lld(byte %lld) end=%lld(byte %lld) reencode=%d\n", i,
+                     (long long)plan[i].inAbsMs, (long long)plan[i].rNextMs, (long long)plan[i].rNextByte,
+                     (long long)plan[i].endMs, (long long)plan[i].endByte, plan[i].reencode ? 1 : 0);
     }
 
     if (!MmtsTsExporter::exportTs(src, out, map, segs, srcSize, &err)) {
