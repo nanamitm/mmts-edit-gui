@@ -27,8 +27,58 @@ Current scope:
   MMT timestamps, so seams carry a PTS discontinuity (players resync at each
   segment's RAP). Contiguous-timestamp / frame-accurate export is future work.
 
-`File > Open Media...` opens `sample.mmts` and auto-loads `sample.mmtsmap`
-(generate the map with `dantto4k --write-mmtsmap-only sample.mmts`).
+## Usage
+
+The editor is non-destructive: it never modifies the source `.mmts`. An edit is
+just a list of source time ranges (an EDL) stored in a small `.mmtsedit` file,
+and `Export` writes a new `.mmts` from that list.
+
+### 1. Open the media
+
+- `File > Open Media...` and pick a (descrambled) `.mmts`.
+- It loads the sidecar index `<name>.mmtsmap` next to it. **If the map is
+  missing, the app offers to create it** by scanning the whole file (this can
+  take a few minutes for large 8K recordings; a progress dialog with Cancel is
+  shown). The result is identical to `dantto4k --write-mmtsmap-only`.
+- Once loaded, the first frame appears in the preview and the timeline shows
+  RAP (blue) / seek (green) / MPT (amber) markers.
+
+### 2. Navigate the preview
+
+- Drag the **seek bar**, or click/drag on the **timeline lane**, to scrub.
+- **`-1f` / `+1f`** step exactly one frame back/forward (frame-accurate). The
+  position label shows `HH:MM:SS.mmm (#frame)`.
+- Forward stepping is fast; stepping back and forth around a point is instant
+  (recently decoded frames are cached).
+
+### 3. Build the cut list (Segments tab)
+
+The edited program is the **concatenation of the segments, in order**.
+
+- **Add** – append a segment from the current playhead to the end.
+- **Split @ playhead** – split the segment under the playhead into two.
+- **Delete** – remove the selected segment.
+- Select a segment (in the table or by clicking its block on the timeline) and
+  set its bounds with **`Set In` / `Set Out`** (uses the current preview
+  position), the **In/Out spin boxes**, or by dragging the segment's red/orange
+  **grips** on the timeline.
+- **Snap to RAP** (toolbar, on by default) snaps In/Out drags to the nearest
+  random-access point, so cuts land on clean GOP boundaries.
+
+### 4. Save / load the edit
+
+- `File > Save Edit...` writes a `.mmtsedit` (the EDL).
+- `File > Open Edit...` restores it: it loads the referenced map **and** the
+  source media, so the preview works immediately.
+
+### 5. Export a new `.mmts`
+
+- `File > Export Edited Media...` writes a new `.mmts` containing only the
+  segments, by copying the RAP-aligned source byte ranges (no re-encode, so it
+  is fast and lossless). A progress dialog with Cancel is shown.
+- A single segment produces a clean contiguous clip. With multiple segments the
+  original MMT timestamps are kept, so each seam carries a PTS discontinuity
+  (players resync at the next segment's RAP).
 
 ## Dependencies
 
@@ -59,10 +109,13 @@ edited program is their concatenation):
 src/
   main.cpp
   model/    MmtsMap, MmtsEdit          (.mmtsmap / .mmtsedit parsing, EDL model)
-  decode/   MmtsVideoDecoder,          (frame-accurate HEVC decode)
+            MmtsExporter               (RAP-aligned .mmts export)
+  decode/   MmtsVideoDecoder           (frame-accurate HEVC decode)
             MmtsDecodeController        (worker thread + coalescing + frame cache)
+            MmtsMapBuilder             (generate .mmtsmap via dantto4k scan)
   ui/       MainWindow, PreviewWidget, TimelineWidget
-tests/      decode_test, controller_test, edit_test   (headless smoke tests)
+tests/      decode_test, controller_test, edit_test,
+            export_test, mapbuild_test  (headless smoke tests)
 ```
 
 ## Build
