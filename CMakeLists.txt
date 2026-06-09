@@ -200,6 +200,20 @@ if(WIN32)
 endif()
 enable_tsduck(mmts-ts-export-test)
 
+# HEVC re-encode test (smart-render building block; uses dantto4k + ffmpeg).
+add_executable(mmts-reencode-test
+    tests/reencode_test.cpp
+    src/model/MmtsMap.cpp src/model/MmtsMap.h
+    src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
+    ${DANTTO4K_SRC_FILES})
+target_compile_definitions(mmts-reencode-test PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
+target_include_directories(mmts-reencode-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
+target_link_directories(mmts-reencode-test PRIVATE "${FFMPEG_DIR}/lib")
+target_link_libraries(mmts-reencode-test PRIVATE Qt6::Core avcodec avutil swscale)
+if(WIN32)
+    target_link_libraries(mmts-reencode-test PRIVATE Winscard ws2_32)
+endif()
+
 # .mmtsmap generation test (uses dantto4k; no ffmpeg).
 add_executable(mmts-mapbuild-test
     tests/mapbuild_test.cpp
