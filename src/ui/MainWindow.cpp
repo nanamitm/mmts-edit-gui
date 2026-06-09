@@ -493,7 +493,10 @@ void MainWindow::exportMediaDialog()
         if (total > 0)
             dlg->setValue(static_cast<int>(done * 100 / total));
     });
-    connect(dlg, &QProgressDialog::canceled, worker, &MmtsExportWorker::cancel);
+    // Direct connection: cancel() only flips an atomic, and the worker thread is
+    // busy copying (not running its event loop), so a queued call would not be
+    // delivered until the copy finished. Direct lets the GUI thread set it now.
+    connect(dlg, &QProgressDialog::canceled, worker, &MmtsExportWorker::cancel, Qt::DirectConnection);
     connect(worker, &MmtsExportWorker::finished, this, [this, dlg, thread, path](bool ok, const QString& err) {
         dlg->close();
         dlg->deleteLater();
