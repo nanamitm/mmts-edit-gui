@@ -6,6 +6,7 @@
 #include <QString>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -46,6 +47,12 @@ public:
 
     // Limit the decoded preview to this width (keeps aspect ratio). 0 = native.
     void setPreviewMaxWidth(int width) { m_previewMaxWidth = width; }
+
+    // Optional sink that receives EVERY frame decoded while seeking forward to a
+    // target (the ones normally discarded), so a cache can keep them. Enable it
+    // only when it pays off (e.g. backward stepping) via setEmitIntermediate().
+    void setFrameSink(std::function<void(qint64 relMs, const QImage&)> sink) { m_frameSink = std::move(sink); }
+    void setEmitIntermediate(bool on) { m_emitIntermediate = on; }
 
     qint64 durationMs() const { return m_durationMs; }
     double frameRate() const { return m_fps; }
@@ -103,6 +110,9 @@ private:
     AVPacket* m_packet = nullptr;
     SwsContext* m_sws = nullptr;
     int m_swsSrcW = 0, m_swsSrcH = 0, m_swsSrcFmt = -1, m_swsDstW = 0, m_swsDstH = 0;
+
+    std::function<void(qint64 relMs, const QImage&)> m_frameSink;
+    bool m_emitIntermediate = false;
 
     int m_previewMaxWidth = 0;
     double m_fps = 0.0;

@@ -21,6 +21,11 @@ void MmtsDecodeWorker::open(const QString& path, const MmtsMap& map)
 {
     m_decoder = std::make_unique<MmtsVideoDecoder>();
     m_decoder->setPreviewMaxWidth(960);
+    // Cache frames decoded on the way to a step target so stepping back through
+    // an already-decoded GOP is instant (enabled per-request in processPending).
+    m_decoder->setFrameSink([this](qint64 ms, const QImage& img) {
+        cachePut(frameIndexOf(ms), img, ms);
+    });
 
     m_cache.clear();
     m_lru.clear();
@@ -137,6 +142,10 @@ void MmtsDecodeWorker::processPending()
     }
     if (reqMs < 0)
         reqMs = 0;
+
+    // For steps, cache the frames decoded on the way to the target so stepping
+    // back through this GOP is instant. Skip for slider seeks (keep them light).
+    m_decoder->setEmitIntermediate(req.kind == Kind::Step);
 
     qint64 actual = reqMs;
     image = m_decoder->frameAtMs(reqMs, &actual);

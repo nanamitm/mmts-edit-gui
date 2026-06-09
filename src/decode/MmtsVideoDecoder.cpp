@@ -344,7 +344,11 @@ QImage MmtsVideoDecoder::decodeUntil(qint64 targetAbsMs, qint64* actualRelMs)
                     *actualRelMs = ptsMs - m_firstVideoPtsMs;
                 return convert(m_frame);
             }
-            // else: discard and keep decoding forward
+            // Frame is before the target: normally discarded. When enabled, hand
+            // it to the sink so a cache can keep it -- makes stepping back through
+            // an already-decoded GOP instant instead of re-seeking each frame.
+            if (m_emitIntermediate && m_frameSink)
+                m_frameSink(ptsMs - m_firstVideoPtsMs, convert(m_frame));
         }
 
         if (!haveAu)
