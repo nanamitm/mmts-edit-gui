@@ -8,6 +8,7 @@ Current scope:
 - Show track, MPT, RAP and seek counts.
 - Render a lightweight timeline with seek, RAP and MPT markers.
 - Save a basic `.mmtsedit` sidecar with one non-destructive source range.
+- Load a `.mmtsedit` sidecar and restore the referenced `.mmtsmap` plus In/Out range.
 
 Current `.mmtsedit` shape:
 

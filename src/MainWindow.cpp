@@ -3,12 +3,15 @@
 #include <QAction>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QToolBar>
@@ -23,10 +26,14 @@ MainWindow::MainWindow(QWidget* parent)
 
     auto* openAction = new QAction("Open Map...", this);
     connect(openAction, &QAction::triggered, this, &MainWindow::openMapDialog);
+    auto* openEditAction = new QAction("Open Edit...", this);
+    connect(openEditAction, &QAction::triggered, this, &MainWindow::openEditDialog);
     auto* saveEditAction = new QAction("Save Edit...", this);
     connect(saveEditAction, &QAction::triggered, this, &MainWindow::saveEditDialog);
     auto* fileMenu = menuBar()->addMenu("File");
     fileMenu->addAction(openAction);
+    fileMenu->addAction(openEditAction);
+    fileMenu->addSeparator();
     fileMenu->addAction(saveEditAction);
 
     m_inSpin = new QSpinBox(this);
@@ -42,8 +49,11 @@ MainWindow::MainWindow(QWidget* parent)
 
     auto* toolbar = addToolBar("Edit");
     toolbar->addAction(openAction);
+    toolbar->addAction(openEditAction);
     toolbar->addSeparator();
+    toolbar->addWidget(new QLabel("In", this));
     toolbar->addWidget(m_inSpin);
+    toolbar->addWidget(new QLabel("Out", this));
     toolbar->addWidget(m_outSpin);
     toolbar->addAction(saveEditAction);
 
@@ -69,6 +79,13 @@ MainWindow::MainWindow(QWidget* parent)
     statusBar()->showMessage("Ready");
 }
 
+bool MainWindow::openFile(const QString& path)
+{
+    if (path.endsWith(".mmtsedit", Qt::CaseInsensitive))
+        return openEdit(path);
+    return openMap(path);
+}
+
 bool MainWindow::openMap(const QString& path)
 {
     MmtsMap map;
@@ -80,13 +97,57 @@ bool MainWindow::openMap(const QString& path)
 
     m_map = map;
     m_timeline->setMap(m_map);
-    m_inSpin->setMaximum(static_cast<int>(qMin<qint64>(m_map.durationMs, m_inSpin->maximum())));
-    m_outSpin->setMaximum(static_cast<int>(qMin<qint64>(m_map.durationMs, m_outSpin->maximum())));
-    m_inSpin->setValue(0);
-    m_outSpin->setValue(static_cast<int>(qMax<qint64>(0, qMin<qint64>(m_map.durationMs, m_outSpin->maximum()))));
-    updateEditRange();
+    const qint64 fullRangeMs = 24ll * 60 * 60 * 1000;
+    const qint64 durationMs = m_map.durationMs > 0 ? m_map.durationMs : fullRangeMs;
+    const int maximumMs = static_cast<int>(qMin(durationMs, fullRangeMs));
+    m_inSpin->setMaximum(maximumMs);
+    m_outSpin->setMaximum(maximumMs);
+    applyEditRange(0, durationMs);
     populateTables();
     statusBar()->showMessage(QString("Loaded %1").arg(path));
+    return true;
+}
+
+bool MainWindow::openEdit(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, "Open Edit Failed", file.errorString());
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        QMessageBox::warning(this, "Open Edit Failed", QString("Invalid .mmtsedit JSON: %1").arg(parseError.errorString()));
+        return false;
+    }
+
+    const QJsonObject root = doc.object();
+    QString mapPath = root.value("map").toString();
+    if (mapPath.isEmpty()) {
+        mapPath = path;
+        if (mapPath.endsWith("edit", Qt::CaseInsensitive))
+            mapPath.chop(4);
+        mapPath += "map";
+    }
+    if (QFileInfo(mapPath).isRelative())
+        mapPath = QFileInfo(path).dir().absoluteFilePath(mapPath);
+
+    if (!openMap(mapPath))
+        return false;
+
+    qint64 inMs = 0;
+    qint64 outMs = m_map.durationMs;
+    const QJsonArray timeline = root.value("timeline").toArray();
+    if (!timeline.isEmpty() && timeline.first().isObject()) {
+        const QJsonObject range = timeline.first().toObject();
+        inMs = static_cast<qint64>(range.value("sourceStartMs").toDouble(0));
+        if (range.contains("sourceEndMs") && !range.value("sourceEndMs").isNull())
+            outMs = static_cast<qint64>(range.value("sourceEndMs").toDouble(outMs));
+    }
+    applyEditRange(inMs, outMs);
+    statusBar()->showMessage(QString("Loaded edit %1").arg(path));
     return true;
 }
 
@@ -99,6 +160,17 @@ void MainWindow::openMapDialog()
         "MMTS Map (*.mmtsmap);;All Files (*)");
     if (!path.isEmpty())
         openMap(path);
+}
+
+void MainWindow::openEditDialog()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        "Open MMTS Edit",
+        QString(),
+        "MMTS Edit (*.mmtsedit);;All Files (*)");
+    if (!path.isEmpty())
+        openEdit(path);
 }
 
 void MainWindow::saveEditDialog()
@@ -143,6 +215,19 @@ void MainWindow::saveEditDialog()
     }
     file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     statusBar()->showMessage(QString("Saved %1").arg(path));
+}
+
+void MainWindow::applyEditRange(qint64 inMs, qint64 outMs)
+{
+    const qint64 maximumMs = m_outSpin->maximum();
+    const int inValue = static_cast<int>(qBound<qint64>(0, inMs, maximumMs));
+    const int outValue = static_cast<int>(qBound<qint64>(inValue, outMs, maximumMs));
+
+    const QSignalBlocker inBlocker(m_inSpin);
+    const QSignalBlocker outBlocker(m_outSpin);
+    m_inSpin->setValue(inValue);
+    m_outSpin->setValue(outValue);
+    m_timeline->setEditRange(inValue, outValue);
 }
 
 void MainWindow::updateEditRange()

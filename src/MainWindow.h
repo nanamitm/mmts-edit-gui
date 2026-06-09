@@ -13,11 +13,15 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
+    bool openFile(const QString& path);
     bool openMap(const QString& path);
+    bool openEdit(const QString& path);
 
 private:
     void openMapDialog();
+    void openEditDialog();
     void saveEditDialog();
+    void applyEditRange(qint64 inMs, qint64 outMs);
     void updateEditRange();
     void populateTables();
     void populateTrackTable();
