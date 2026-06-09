@@ -2,10 +2,11 @@
 
 #include "MmtsVideoDecoder.h"
 
+#include <algorithm>
 #include <cmath>
 
 // ---------------------------------------------------------------------------
-// Worker (runs on the decode thread)
+// Main decode worker
 // ---------------------------------------------------------------------------
 MmtsDecodeWorker::MmtsDecodeWorker() = default;
 MmtsDecodeWorker::~MmtsDecodeWorker() = default;
@@ -24,11 +25,10 @@ void MmtsDecodeWorker::open(const QString& path, const MmtsMap& map)
     // Cache frames decoded on the way to a step target so stepping back through
     // an already-decoded GOP is instant (enabled per-request in processPending).
     m_decoder->setFrameSink([this](qint64 ms, const QImage& img) {
-        cachePut(frameIndexOf(ms), img, ms);
+        if (m_cache)
+            m_cache->put(frameIndexOf(ms), img, ms);
     });
 
-    m_cache.clear();
-    m_lru.clear();
     m_curMs = 0;
     m_curIndex = 0;
     {
@@ -44,63 +44,33 @@ void MmtsDecodeWorker::open(const QString& path, const MmtsMap& map)
     }
 
     // Prime: decode the first frame so the frame rate (from the HEVC SPS/VUI) is
-    // known before we report 'opened'. Frame stepping and the cache both depend
-    // on a valid fps to map frame indices <-> time.
+    // known before we report 'opened'.
     qint64 actual = 0;
     const QImage first = m_decoder->frameAtMs(0, &actual);
     if (!first.isNull()) {
         m_curMs = actual;
         m_curIndex = frameIndexOf(actual);
-        cachePut(m_curIndex, first, actual);
+        if (m_cache)
+            m_cache->put(m_curIndex, first, actual);
     }
     emit opened(true, m_decoder->durationMs(), m_decoder->frameRate(), QString());
-}
-
-qint64 MmtsDecodeWorker::frameTimeOf(qint64 index) const
-{
-    const double fps = m_decoder ? m_decoder->frameRate() : 0.0;
-    if (fps > 0.0)
-        return llround(index * 1000.0 / fps);
-    return index;
 }
 
 void MmtsDecodeWorker::shutdown()
 {
     m_decoder.reset();
-    m_cache.clear();
-    m_lru.clear();
 }
 
 qint64 MmtsDecodeWorker::frameIndexOf(qint64 ms) const
 {
     const double fps = m_decoder ? m_decoder->frameRate() : 0.0;
-    if (fps > 0.0)
-        return llround(ms * fps / 1000.0);
-    return ms; // ms-granularity fallback before fps is known
+    return fps > 0.0 ? llround(ms * fps / 1000.0) : ms;
 }
 
-bool MmtsDecodeWorker::cacheGet(qint64 index, QImage& image, qint64& ms)
+qint64 MmtsDecodeWorker::frameTimeOf(qint64 index) const
 {
-    auto it = m_cache.find(index);
-    if (it == m_cache.end())
-        return false;
-    image = it.value().first;
-    ms = it.value().second;
-    m_lru.removeOne(index);
-    m_lru.append(index); // mark most-recently-used
-    return true;
-}
-
-void MmtsDecodeWorker::cachePut(qint64 index, const QImage& image, qint64 ms)
-{
-    if (m_cache.contains(index))
-        m_lru.removeOne(index);
-    m_cache.insert(index, qMakePair(image, ms));
-    m_lru.append(index);
-    while (m_lru.size() > m_cacheCapacity) {
-        const qint64 evict = m_lru.takeFirst();
-        m_cache.remove(evict);
-    }
+    const double fps = m_decoder ? m_decoder->frameRate() : 0.0;
+    return fps > 0.0 ? llround(index * 1000.0 / fps) : index;
 }
 
 void MmtsDecodeWorker::processPending()
@@ -116,15 +86,13 @@ void MmtsDecodeWorker::processPending()
     if (!m_decoder || !m_decoder->isOpen())
         return;
 
-    qint64 targetIndex = (req.kind == Kind::Step)
-        ? m_curIndex + req.delta
-        : frameIndexOf(req.relMs);
+    qint64 targetIndex = (req.kind == Kind::Step) ? m_curIndex + req.delta : frameIndexOf(req.relMs);
     if (targetIndex < 0)
         targetIndex = 0;
 
     QImage image;
     qint64 ms = 0;
-    if (cacheGet(targetIndex, image, ms)) {
+    if (m_cache && m_cache->get(targetIndex, image, ms)) {
         m_curIndex = targetIndex;
         m_curMs = ms;
         m_decoder->resync(ms); // keep the decoder consistent for the next decode
@@ -132,14 +100,7 @@ void MmtsDecodeWorker::processPending()
         return;
     }
 
-    qint64 reqMs;
-    if (req.kind == Kind::Step) {
-        // Map the target frame index back to time, biased just below the frame's
-        // PTS so frameAtMs() lands on exactly that frame (it returns >= target).
-        reqMs = frameTimeOf(targetIndex) - 1;
-    } else {
-        reqMs = req.relMs;
-    }
+    qint64 reqMs = (req.kind == Kind::Step) ? frameTimeOf(targetIndex) - 1 : req.relMs;
     if (reqMs < 0)
         reqMs = 0;
 
@@ -154,8 +115,104 @@ void MmtsDecodeWorker::processPending()
 
     m_curMs = actual;
     m_curIndex = frameIndexOf(actual);
-    cachePut(m_curIndex, image, actual);
+    if (m_cache)
+        m_cache->put(m_curIndex, image, actual);
     emit frameReady(image, actual, req.id);
+}
+
+// ---------------------------------------------------------------------------
+// Background prefetch worker
+// ---------------------------------------------------------------------------
+MmtsPrefetchWorker::MmtsPrefetchWorker() = default;
+MmtsPrefetchWorker::~MmtsPrefetchWorker() = default;
+
+void MmtsPrefetchWorker::setPending(qint64 currentRelMs)
+{
+    QMutexLocker lock(&m_mutex);
+    m_pendingRel = currentRelMs;
+    m_havePending = true;
+}
+
+void MmtsPrefetchWorker::open(const QString& path, const MmtsMap& map)
+{
+    m_decoder = std::make_unique<MmtsVideoDecoder>();
+    m_decoder->setPreviewMaxWidth(960); // must match the main decoder's frame size
+    m_decoder->setEmitIntermediate(true);
+    m_decoder->setFrameSink([this](qint64 ms, const QImage& img) {
+        if (m_cache)
+            m_cache->put(frameIndexOf(ms), img, ms);
+    });
+
+    // RAP times in relative ms, sorted -- used to find GOP boundaries.
+    m_rapRel.clear();
+    const qint64 firstPts = map.firstVideoPtsMs > 0 ? map.firstVideoPtsMs : 0;
+    for (const auto& p : map.rapPoints) {
+        const qint64 rel = p.timeMs - firstPts;
+        if (rel >= 0)
+            m_rapRel.push_back(rel);
+    }
+    std::sort(m_rapRel.begin(), m_rapRel.end());
+
+    QString error;
+    if (!m_decoder->open(path, map, &error)) {
+        m_decoder.reset();
+        return;
+    }
+    // Prime so the frame rate is known (cache indices must match the main worker).
+    m_decoder->frameAtMs(0);
+    {
+        QMutexLocker lock(&m_mutex);
+        m_havePending = false;
+    }
+}
+
+void MmtsPrefetchWorker::shutdown()
+{
+    m_decoder.reset();
+}
+
+qint64 MmtsPrefetchWorker::frameIndexOf(qint64 ms) const
+{
+    const double fps = m_decoder ? m_decoder->frameRate() : 0.0;
+    return fps > 0.0 ? llround(ms * fps / 1000.0) : ms;
+}
+
+void MmtsPrefetchWorker::prefetch()
+{
+    qint64 cur = -1;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (!m_havePending)
+            return;
+        cur = m_pendingRel;
+        m_havePending = false;
+    }
+    if (!m_decoder || !m_decoder->isOpen() || m_rapRel.isEmpty() || !m_cache)
+        return;
+
+    // Start of the GOP containing the current position.
+    qint64 curGopStart = -1;
+    for (qint64 r : m_rapRel) {
+        if (r <= cur)
+            curGopStart = r;
+        else
+            break;
+    }
+    if (curGopStart < 0)
+        return;
+
+    // Fill the current GOP first (so backward stepping right after a slider seek,
+    // which does not cache intermediates, becomes a cache hit), then the previous
+    // GOP (for crossing the boundary). The cache holds the GOP-start frame as a
+    // sentinel, so already-prefetched GOPs are skipped cheaply.
+    if (!m_cache->contains(frameIndexOf(curGopStart)))
+        m_decoder->frameAtMs(cur); // caches [curGopStart .. cur)
+
+    if (curGopStart > 0) {
+        const qint64 prevTarget = curGopStart - 1;
+        if (!m_cache->contains(frameIndexOf(prevTarget)))
+            m_decoder->frameAtMs(prevTarget); // caches the previous GOP
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -167,23 +224,41 @@ MmtsDecodeController::MmtsDecodeController(QObject* parent)
     qRegisterMetaType<MmtsMap>("MmtsMap");
 
     m_worker = new MmtsDecodeWorker();
+    m_worker->setCache(&m_cache);
     m_worker->moveToThread(&m_thread);
     connect(&m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
     connect(m_worker, &MmtsDecodeWorker::opened, this, &MmtsDecodeController::opened);
     connect(m_worker, &MmtsDecodeWorker::frameReady, this, &MmtsDecodeController::frameReady);
+    // After each delivered frame, ask the prefetch worker to fetch the previous GOP.
+    connect(m_worker, &MmtsDecodeWorker::frameReady, this, [this](const QImage&, qint64 relMs, quint64) {
+        m_prefetch->setPending(relMs);
+        QMetaObject::invokeMethod(m_prefetch, "prefetch", Qt::QueuedConnection);
+    });
     m_thread.start();
+
+    m_prefetch = new MmtsPrefetchWorker();
+    m_prefetch->setCache(&m_cache);
+    m_prefetch->moveToThread(&m_prefetchThread);
+    connect(&m_prefetchThread, &QThread::finished, m_prefetch, &QObject::deleteLater);
+    m_prefetchThread.start();
 }
 
 MmtsDecodeController::~MmtsDecodeController()
 {
     QMetaObject::invokeMethod(m_worker, "shutdown", Qt::BlockingQueuedConnection);
+    QMetaObject::invokeMethod(m_prefetch, "shutdown", Qt::BlockingQueuedConnection);
     m_thread.quit();
+    m_prefetchThread.quit();
     m_thread.wait();
+    m_prefetchThread.wait();
 }
 
 void MmtsDecodeController::openMedia(const QString& path, const MmtsMap& map)
 {
+    m_cache.clear();
     QMetaObject::invokeMethod(m_worker, "open", Qt::QueuedConnection,
+                              Q_ARG(QString, path), Q_ARG(MmtsMap, map));
+    QMetaObject::invokeMethod(m_prefetch, "open", Qt::QueuedConnection,
                               Q_ARG(QString, path), Q_ARG(MmtsMap, map));
 }
 
