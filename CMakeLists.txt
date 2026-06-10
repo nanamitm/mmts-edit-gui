@@ -38,7 +38,7 @@ set(DANTTO4K_SOURCES
     mhShortEventDescriptor mhSimpleApplicationLocationDescriptor mhSiParameterDescriptor
     mhStreamIdentificationDescriptor
     mhTot mhTransportProtocolDescriptor mmtDescriptorFactory mmtDescriptors
-    mmtGeneralLocationInfo mmtp mmtsMapWriter mmtStream mmtTableFactory mmtTlvDemuxer mpt mpu
+    mmtGeneralLocationInfo mmtp mmtSplice mmtsMapWriter mmtStream mmtTableFactory mmtTlvDemuxer mpt mpu
     mpuApplicationProcessor mpuAudioProcessor mpuExtendedTimestampDescriptor
     mpuProcessorFactory mpuSubtitleProcessor mpuTimestampDescriptor mpuVideoProcessor
     multimediaServiceInformationDescriptor networkNameDescriptor nit ntp paMessage
@@ -114,6 +114,7 @@ endfunction()
 # TS exporter sources (need tsduck).
 set(TS_SRC
     src/decode/MmtsTsExporter.cpp src/decode/MmtsTsExporter.h
+    src/decode/MmtsSmartExporter.cpp src/decode/MmtsSmartExporter.h
     src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
     ${REMUX_SRC})
 
@@ -121,6 +122,7 @@ set(TS_SRC
 set(MODEL_SRC
     src/model/MmtsMap.cpp  src/model/MmtsMap.h
     src/model/MmtsEdit.cpp src/model/MmtsEdit.h
+    src/model/MmtsCutPlan.cpp src/model/MmtsCutPlan.h
     src/model/MmtsExporter.cpp src/model/MmtsExporter.h)
 set(DECODE_SRC
     src/decode/MmtsVideoDecoder.cpp    src/decode/MmtsVideoDecoder.h
@@ -190,6 +192,7 @@ add_executable(mmts-ts-export-test
     tests/ts_export_test.cpp
     src/model/MmtsMap.cpp src/model/MmtsMap.h
     src/model/MmtsEdit.cpp src/model/MmtsEdit.h
+    src/model/MmtsCutPlan.cpp src/model/MmtsCutPlan.h
     src/decode/MmtsTsExporter.cpp src/decode/MmtsTsExporter.h
     src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
     ${REMUX_SRC}
@@ -228,6 +231,23 @@ target_include_directories(mmts-mapbuild-test PRIVATE ${APP_INCLUDE} ${EXT_INCLU
 target_link_libraries(mmts-mapbuild-test PRIVATE Qt6::Core)
 if(WIN32)
     target_link_libraries(mmts-mapbuild-test PRIVATE Winscard ws2_32)
+endif()
+
+# Smart .mmts export test (frame-accurate; uses dantto4k + ffmpeg, no tsduck).
+add_executable(mmts-smart-export-test
+    tests/smart_export_test.cpp
+    src/model/MmtsMap.cpp src/model/MmtsMap.h
+    src/model/MmtsEdit.cpp src/model/MmtsEdit.h
+    src/model/MmtsCutPlan.cpp src/model/MmtsCutPlan.h
+    src/decode/MmtsSmartExporter.cpp src/decode/MmtsSmartExporter.h
+    src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
+    ${DANTTO4K_SRC_FILES})
+target_compile_definitions(mmts-smart-export-test PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
+target_include_directories(mmts-smart-export-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
+target_link_directories(mmts-smart-export-test PRIVATE "${FFMPEG_DIR}/lib")
+target_link_libraries(mmts-smart-export-test PRIVATE Qt6::Core avcodec avutil swscale)
+if(WIN32)
+    target_link_libraries(mmts-smart-export-test PRIVATE Winscard ws2_32)
 endif()
 
 # .mmts export (RAP-aligned copy) test (no ffmpeg).

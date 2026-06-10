@@ -3,7 +3,8 @@
 #include "MmtsDecodeController.h"
 #include "HevcReencoder.h"
 #include "MmtsMapBuilder.h"
-#include "MmtsExporter.h"
+#include "MmtsCutPlan.h"
+#include "MmtsSmartExporter.h"
 #include "MmtsTsExporter.h"
 #include "PreviewWidget.h"
 
@@ -722,27 +723,49 @@ void MainWindow::exportMmtsDialog()
     }
 
     const qint64 srcSize = QFileInfo(m_mediaPath).size();
-    const auto ranges = MmtsExporter::planRanges(m_map, m_segments, srcSize);
-    if (ranges.isEmpty()) {
+    const auto plan = planMmtsCutSegments(m_map, m_segments, srcSize);
+    if (plan.isEmpty()) {
         QMessageBox::warning(this, "Export", "Could not map any segment to RAP byte ranges.");
         return;
     }
-
-    // The .mmts export is a lossless byte copy, so cuts snap to RAP (GOP)
-    // boundaries and multiple segments keep their original timestamps (the
-    // seams carry a PTS discontinuity). Confirm those trade-offs up front;
-    // the TS export is the frame-accurate / contiguous-timeline path.
-    {
-        QString note = QStringLiteral(
-            "MMTS export copies the source bytes losslessly.\n\n"
-            "- Cuts snap to RAP (GOP) boundaries, not exact frames.");
-        if (ranges.size() > 1) {
-            note += QStringLiteral(
-                "\n- Multiple segments keep their original timestamps, so each seam "
-                "has a PTS discontinuity (players resync at the next RAP).");
+    int smartRenderSegments = 0;
+    for (const auto& seg : plan) {
+        if ((seg.copyStartMs - seg.inAbsMs) > kMmtsCutRapThresholdMs ||
+            (seg.outAbsMs - seg.copyEndMs) > kMmtsCutRapThresholdMs) {
+            ++smartRenderSegments;
         }
-        note += QStringLiteral("\n\nFor frame-accurate cuts on a continuous timeline, use \"Export Edited TS...\".");
-        QMessageBox box(QMessageBox::Information, "Export Edited MMTS", note,
+    }
+    constexpr auto kSmartRenderEncoder = "hevc_nvenc";
+    bool requireFrameAccurate = smartRenderSegments > 0;
+    if (requireFrameAccurate && !HevcReencoder::encoderAvailable(QString::fromLatin1(kSmartRenderEncoder))) {
+        QMessageBox box(QMessageBox::Warning, "Hardware Encoder Not Found",
+                        QString("%1 segment(s) require HEVC re-encoding for frame-accurate cuts.\n\n"
+                                "The current encoder is %2, but this FFmpeg build does not expose that encoder. "
+                                "If fallback is allowed, export can continue by using RAP boundaries, but the "
+                                "affected cut(s) may lose frame accuracy.")
+                            .arg(smartRenderSegments)
+                            .arg(kSmartRenderEncoder),
+                        QMessageBox::Yes | QMessageBox::No, this);
+        box.setDefaultButton(QMessageBox::No);
+        box.setButtonText(QMessageBox::Yes, "Continue");
+        box.setButtonText(QMessageBox::No, "Cancel");
+        QCheckBox allowFallback("Allow RAP-boundary fallback for this export", &box);
+        allowFallback.setChecked(false);
+        box.setCheckBox(&allowFallback);
+        if (box.exec() != QMessageBox::Yes)
+            return;
+        requireFrameAccurate = !allowFallback.isChecked();
+    }
+
+    // Unlike the TS export, the .mmts timeline is not rebased: multiple
+    // segments keep their original timestamps, so seams carry a PTS
+    // discontinuity (players resync at the next RAP).
+    if (plan.size() > 1) {
+        QMessageBox box(QMessageBox::Information, "Export Edited MMTS",
+                        QStringLiteral(
+                            "MMTS export keeps the original timestamps: each seam between segments "
+                            "has a PTS discontinuity (players resync there).\n\n"
+                            "For a continuous timeline, use \"Export Edited TS...\"."),
                         QMessageBox::Ok | QMessageBox::Cancel, this);
         box.setDefaultButton(QMessageBox::Ok);
         if (box.exec() != QMessageBox::Ok)
@@ -760,18 +783,18 @@ void MainWindow::exportMmtsDialog()
     }
 
     auto* thread = new QThread(this);
-    auto* worker = new MmtsExportWorker;
+    auto* worker = new MmtsSmartExportWorker;
     worker->moveToThread(thread);
-    worker->configure(m_mediaPath, path, ranges);
+    worker->configure(m_mediaPath, path, m_map, m_segments, srcSize, requireFrameAccurate);
 
-    auto* dlg = new QProgressDialog("Exporting edited MMTS (stream copy)...", "Cancel", 0, 100, this);
+    auto* dlg = new QProgressDialog("Exporting edited MMTS (smart copy)...", "Cancel", 0, 100, this);
     dlg->setWindowModality(Qt::WindowModal);
     dlg->setMinimumDuration(0);
     dlg->setAutoClose(false);
     dlg->setAutoReset(false);
 
-    connect(thread, &QThread::started, worker, &MmtsExportWorker::run);
-    connect(worker, &MmtsExportWorker::progress, this, [dlg](qint64 done, qint64 total) {
+    connect(thread, &QThread::started, worker, &MmtsSmartExportWorker::run);
+    connect(worker, &MmtsSmartExportWorker::progress, this, [dlg](qint64 done, qint64 total) {
         // Ignore progress still queued after a cancel: setValue() on a cancelled
         // QProgressDialog would pop it back up momentarily.
         if (dlg->wasCanceled() || total <= 0)
@@ -781,13 +804,20 @@ void MainWindow::exportMmtsDialog()
     // Direct connection: cancel() only flips an atomic, and the worker thread is
     // busy (not running its event loop), so a queued call would not be delivered
     // until it finished. Direct lets the GUI thread set it now.
-    connect(dlg, &QProgressDialog::canceled, worker, &MmtsExportWorker::cancel, Qt::DirectConnection);
-    connect(worker, &MmtsExportWorker::finished, this,
-            [this, dlg, thread, path](bool ok, const QString& err) {
+    connect(dlg, &QProgressDialog::canceled, worker, &MmtsSmartExportWorker::cancel, Qt::DirectConnection);
+    connect(worker, &MmtsSmartExportWorker::finished, this,
+            [this, dlg, thread, path](bool ok, const QString& err, const QStringList& warnings) {
         dlg->close();
         dlg->deleteLater();
         if (ok) {
             statusBar()->showMessage(QString("Exported %1").arg(path));
+            if (!warnings.isEmpty()) {
+                QMessageBox::warning(
+                    this, "Export Completed With Warnings",
+                    QString("Export finished, but some smart-rendered cuts fell back to RAP boundaries. "
+                            "Frame accuracy may be reduced for those cuts.\n\n%1")
+                        .arg(warnings.join("\n")));
+            }
         } else if (err != QLatin1String("Cancelled")) {
             QMessageBox::warning(this, "Export Failed", err);
         } else {
@@ -798,7 +828,7 @@ void MainWindow::exportMmtsDialog()
     connect(thread, &QThread::finished, worker, &QObject::deleteLater);
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
 
-    statusBar()->showMessage(QString("Exporting %1 segments to MMTS...").arg(ranges.size()));
+    statusBar()->showMessage(QString("Exporting %1 segments to MMTS...").arg(plan.size()));
     dlg->show();
     thread->start();
 }

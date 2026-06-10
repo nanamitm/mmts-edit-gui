@@ -29,6 +29,13 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
   再エンコード（IDR 始まりの GOP）し、その間をストリームコピーで接合する。コピー終端は
   **デコード順（DTS）で切る**ため、open-GOP の境界参照（RASL の先行ピクチャ）が宙に
   浮かず、繋ぎ目もデコード破綻しない。
+- 編集結果を **MMTS(.mmts) として書き出し**（`File > Export Edited MMTS...`）:
+  コピー区間は TLV パケットをバイト一致で透過コピー（無劣化）し、境界の部分 GOP だけを
+  再エンコードして MMT/TLV パケットとして合成・差し替える（**IN/OUT ともフレーム精度**）。
+  境界窓内の MPT は `mpu_timestamp` / `mpu_extended_timestamp` 記述子を合成 MPU 用に
+  書き換え、音声/字幕 MPU は `[IN, OUT)` でゲーティングする。タイムスタンプは再ベース
+  しないため、**複数区間の継ぎ目には PTS 不連続が残る**（dantto4k 系の再生側は MPU
+  シーケンス再同期で対応済み）。連続タイムラインが必要な場合は TS 書き出しを使用。
 
 ## 使い方
 
@@ -84,6 +91,15 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
   字幕（ARIB字幕）も含まれます。Snap to RAP を切れば任意フレームで IN/OUT を切れます
   （その区間は再エンコードが入るぶん書き出しに時間がかかります）。
 
+### 6. MMTS を書き出す
+
+- `File > Export Edited MMTS...` で、区間だけを連結した **MMT/TLV(.mmts)** を生成します。
+  コピー区間は元のパケットをそのまま透過するため**無劣化**、境界の部分 GOP のみ
+  hevc_nvenc で再エンコードして MMT パケットに再パックします（**IN/OUT ともフレーム精度**）。
+- TS 書き出しと違いタイムスタンプは元のままなので、**複数区間の継ぎ目には PTS 不連続が
+  残ります**（書き出したファイルの再生・再編集には MPU シーケンス再同期対応の dantto4k
+  が必要）。音声/字幕は MPU 粒度（〜0.1 秒）で `[IN, OUT)` にゲーティングされます。
+
 ## 依存関係
 
 - Qt 6（Widgets）。
@@ -118,13 +134,16 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
 src/
   main.cpp
   model/    MmtsMap, MmtsEdit          (.mmtsmap / .mmtsedit のパース、EDL モデル)
+            MmtsCutPlan                (EDL→RAP境界/コピー範囲の共有プランナ)
+            MmtsExporter               (RAP境界バイトコピーの .mmts 出力)
   decode/   MmtsVideoDecoder           (フレーム精度 HEVC デコード)
             MmtsDecodeController        (ワーカースレッド + 先読み + フレームキャッシュ)
             MmtsMapBuilder             (dantto4k スキャンで .mmtsmap 生成)
             MmtsTsExporter             (EDL を連続 PTS の MPEG-2 TS に再多重化)
+            MmtsSmartExporter          (フレーム精度 .mmts 出力: 透過コピー+境界スプライス)
   ui/       MainWindow, PreviewWidget, TimelineWidget
-tests/      decode_test, controller_test, edit_test,
-            mapbuild_test, ts_export_test  (ヘッドレスのスモークテスト)
+tests/      decode_test, controller_test, edit_test, mapbuild_test,
+            export_test, ts_export_test, smart_export_test  (ヘッドレスのスモークテスト)
 ```
 
 ## ビルド

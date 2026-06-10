@@ -1,6 +1,7 @@
 #include "MmtsTsExporter.h"
 
 #include "HevcReencoder.h"
+#include "MmtsCutPlan.h"
 #include "mmtStream.h"
 #include "mmtTlvDemuxer.h"
 #include "mpuProcessorBase.h" // MfuData, NOPTS_VALUE
@@ -146,64 +147,17 @@ QVector<MmtsTsExporter::Segment> MmtsTsExporter::planSegments(const MmtsMap& map
                                                              const QVector<EditSegment>& segments,
                                                              qint64 sourceSizeBytes)
 {
-    QVector<MmtsPoint> raps = map.rapPoints;
-    std::sort(raps.begin(), raps.end(), [](const MmtsPoint& a, const MmtsPoint& b) { return a.timeMs < b.timeMs; });
-
-    const qint64 firstPts = map.firstVideoPtsMs > 0 ? map.firstVideoPtsMs : 0;
-    constexpr qint64 kThr = 20; // within ~1 frame of a RAP -> treat as RAP-aligned
-
+    // Planning lives in MmtsCutPlan (shared with the .mmts smart exporter).
     QVector<Segment> out;
-    for (const auto& seg : segments) {
+    for (const auto& c : planMmtsCutSegments(map, segments, sourceSizeBytes)) {
         Segment s;
-        s.inAbsMs = seg.startMs + firstPts;
-        s.outAbsMs = seg.endMs + firstPts;
-        if (s.outAbsMs <= s.inAbsMs)
-            continue;
-
-        // RAPs around IN: prev (demux start) and next (copy start).
-        qint64 prevByte = 0;
-        qint64 rNextMs = -1;
-        for (const auto& p : raps) {
-            if (p.timeMs <= s.inAbsMs) prevByte = static_cast<qint64>(p.offset);
-            else { rNextMs = p.timeMs; break; }
-        }
-        if (rNextMs < 0) rNextMs = s.inAbsMs;
-
-        // OUT (frame-accurate): rLast = last RAP at/before OUT (the tail boundary,
-        // an IRAP we can decode-cleanly cut at); rEnd = first RAP at/after OUT
-        // (how far to demux so audio/subtitle up to OUT are captured). The copy
-        // ends at rLast in DECODE order (dts gating drops the boundary GOP incl.
-        // its open-GOP RASL leading pics); [rLast, OUT) is re-encoded as the tail.
-        const qint64 outFaMs = s.outAbsMs; // frame-accurate OUT (kept as-is)
-        qint64 rLastMs = -1;
-        qint64 rEndMs = -1;
-        qint64 endByte = sourceSizeBytes;
-        for (const auto& p : raps) {
-            if (p.timeMs <= outFaMs) rLastMs = p.timeMs;
-            else { rEndMs = p.timeMs; endByte = static_cast<qint64>(p.offset); break; }
-        }
-        if (rLastMs < 0) rLastMs = outFaMs;
-
-        const bool reencIn = (rNextMs - s.inAbsMs) > kThr;
-        const bool reencOut = (outFaMs - rLastMs) > kThr;
-        s.copyStartMs = reencIn ? rNextMs : s.inAbsMs;
-        s.copyEndMs = reencOut ? rLastMs : outFaMs;
-        s.outAbsMs = outFaMs;
-
-        // Segment shorter than the copy span (IN/OUT inside one GOP, or copyStart
-        // past copyEnd): no stream copy -- re-encode the whole [IN, OUT) as lead-in.
-        if (s.copyStartMs >= s.copyEndMs) {
-            s.copyStartMs = s.outAbsMs;
-            s.copyEndMs = s.outAbsMs;
-        }
-
-        s.prerollByte = std::clamp<qint64>(prevByte, 0, sourceSizeBytes);
-        s.endByte = std::clamp<qint64>(endByte, 0, sourceSizeBytes);
-
-        // copyStart<=copyEnd always; when equal (segment within one GOP) the copy
-        // is empty and the lead-in re-encode [IN, copyStart) covers the whole span.
-        if (s.endByte > s.prerollByte && s.outAbsMs > s.inAbsMs)
-            out.push_back(s);
+        s.inAbsMs = c.inAbsMs;
+        s.outAbsMs = c.outAbsMs;
+        s.prerollByte = c.prerollByte;
+        s.endByte = c.endByte;
+        s.copyStartMs = c.copyStartMs;
+        s.copyEndMs = c.copyEndMs;
+        out.push_back(s);
     }
     return out;
 }
