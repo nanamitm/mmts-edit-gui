@@ -211,7 +211,9 @@ QVector<MmtsTsExporter::Segment> MmtsTsExporter::planSegments(const MmtsMap& map
 bool MmtsTsExporter::exportTs(const QString& srcPath, const QString& dstPath,
                               const MmtsMap& map, const QVector<EditSegment>& segments,
                               qint64 sourceSizeBytes, QString* errorMessage,
-                              const std::function<bool(qint64, qint64)>& progress)
+                              const std::function<bool(qint64, qint64)>& progress,
+                              QStringList* warnings,
+                              bool requireFrameAccurate)
 {
     const QVector<Segment> plan = planSegments(map, segments, sourceSizeBytes);
     if (plan.isEmpty()) {
@@ -251,7 +253,9 @@ bool MmtsTsExporter::exportTs(const QString& srcPath, const QString& dstPath,
     buf.reserve(kChunk * 2);
 
     constexpr qint64 kThr = 20;
+    int segmentNo = 0;
     for (const Segment& seg : plan) {
+        ++segmentNo;
         std::vector<HevcReencoder::Au> leadIn, tail;
         qint64 effInMs = seg.inAbsMs;
         qint64 effOutMs = seg.outAbsMs;
@@ -259,14 +263,40 @@ bool MmtsTsExporter::exportTs(const QString& srcPath, const QString& dstPath,
         // Lead-in re-encode [IN, copyStart) (also the whole segment when copy is empty).
         if (seg.copyStartMs - seg.inAbsMs > kThr) {
             QString rerr;
-            if (!reenc.reencode(srcPath, map, seg.inAbsMs - firstPts, seg.copyStartMs - firstPts, leadIn, &rerr))
+            if (!reenc.reencode(srcPath, map, seg.inAbsMs - firstPts, seg.copyStartMs - firstPts, leadIn, &rerr)) {
+                const QString message = QString("Segment #%1 lead-in re-encode failed; IN cannot be exported frame-accurately. %2")
+                    .arg(segmentNo)
+                    .arg(rerr);
+                if (requireFrameAccurate) {
+                    if (errorMessage) *errorMessage = message;
+                    ofs.close();
+                    QFile::remove(dstPath);
+                    return false;
+                }
+                if (warnings) {
+                    warnings->push_back(message + QStringLiteral(" IN was moved to the next RAP boundary."));
+                }
                 effInMs = seg.copyStartMs; // fall back: start at the copy RAP
+            }
         }
         // Tail re-encode [copyEnd, OUT).
         if (seg.outAbsMs - seg.copyEndMs > kThr) {
             QString rerr;
-            if (!reenc.reencode(srcPath, map, seg.copyEndMs - firstPts, seg.outAbsMs - firstPts, tail, &rerr))
+            if (!reenc.reencode(srcPath, map, seg.copyEndMs - firstPts, seg.outAbsMs - firstPts, tail, &rerr)) {
+                const QString message = QString("Segment #%1 tail re-encode failed; OUT cannot be exported frame-accurately. %2")
+                    .arg(segmentNo)
+                    .arg(rerr);
+                if (requireFrameAccurate) {
+                    if (errorMessage) *errorMessage = message;
+                    ofs.close();
+                    QFile::remove(dstPath);
+                    return false;
+                }
+                if (warnings) {
+                    warnings->push_back(message + QStringLiteral(" OUT was moved to the previous RAP boundary."));
+                }
                 effOutMs = seg.copyEndMs; // fall back: end at the copy RAP
+            }
         }
         const bool tailReencoded = !tail.empty();
 
@@ -327,24 +357,29 @@ bool MmtsTsExporter::exportTs(const QString& srcPath, const QString& dstPath,
 
 // ---------------------------------------------------------------------------
 void MmtsTsExportWorker::configure(const QString& srcPath, const QString& dstPath, const MmtsMap& map,
-                                   const QVector<EditSegment>& segments, qint64 sourceSizeBytes)
+                                   const QVector<EditSegment>& segments, qint64 sourceSizeBytes,
+                                   bool requireFrameAccurate)
 {
     m_srcPath = srcPath;
     m_dstPath = dstPath;
     m_map = map;
     m_segments = segments;
     m_sourceSize = sourceSizeBytes;
+    m_requireFrameAccurate = requireFrameAccurate;
     m_cancel.store(false);
 }
 
 void MmtsTsExportWorker::run()
 {
     QString error;
+    QStringList warnings;
     const bool ok = MmtsTsExporter::exportTs(
         m_srcPath, m_dstPath, m_map, m_segments, m_sourceSize, &error,
         [this](qint64 done, qint64 total) {
             emit progress(done, total);
             return !m_cancel.load();
-        });
-    emit finished(ok, error);
+        },
+        &warnings,
+        m_requireFrameAccurate);
+    emit finished(ok, error, warnings);
 }

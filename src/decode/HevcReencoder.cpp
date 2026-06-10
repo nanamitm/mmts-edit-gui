@@ -76,6 +76,11 @@ private:
 };
 } // namespace
 
+bool HevcReencoder::encoderAvailable(const QString& name)
+{
+    return avcodec_find_encoder_by_name(name.toUtf8().constData()) != nullptr;
+}
+
 bool HevcReencoder::reencode(const QString& mmtsPath, const MmtsMap& map,
                              qint64 startRelMs, qint64 endRelMs,
                              std::vector<Au>& out, QString* errorMessage)

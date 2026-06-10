@@ -12,9 +12,11 @@
 
 class PreviewWidget;
 class MmtsDecodeController;
+class QComboBox;
 class QSlider;
 class QLabel;
 class QPushButton;
+class QTabWidget;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -52,20 +54,31 @@ private:
     void setSegments(const QVector<EditSegment>& segments, int selected);
     void selectSegment(int index);
     void rebuildSegmentTable();
+    void rebuildEditCombo();
     void syncTimeline();
     void updateSelectedFromSpins();
+    void updateDraftLabels();
+    void applyEditedSegment();
     bool ensureSegmentSelected();
     void setInToCurrent();
     void setOutToCurrent();
     void addSegment();
+    void clearDraftSegment();
+    void moveSelectedSegmentUp();
+    void moveSelectedSegmentDown();
     void splitSegmentAtPlayhead();
     void deleteSelectedSegment();
+    bool editRangesTabActive() const;
     qint64 sourceDurationMs() const;
 
     MmtsMap m_map;
     TimelineWidget* m_timeline = nullptr;
-    QSpinBox* m_inSpin = nullptr;
-    QSpinBox* m_outSpin = nullptr;
+    QLabel* m_draftInLabel = nullptr;
+    QLabel* m_draftOutLabel = nullptr;
+    QSpinBox* m_editInSpin = nullptr;
+    QSpinBox* m_editOutSpin = nullptr;
+    QComboBox* m_editSegmentCombo = nullptr;
+    QTabWidget* m_segmentTabs = nullptr;
     QTableWidget* m_trackTable = nullptr;
     QTableWidget* m_mptTable = nullptr;
     QTableWidget* m_rapTable = nullptr;
@@ -85,4 +98,8 @@ private:
 
     QVector<EditSegment> m_segments;
     int m_selectedSegment = -1;
+    qint64 m_draftInMs = 0;
+    qint64 m_draftOutMs = 0;
+    bool m_draftInSet = false;
+    bool m_draftOutSet = false;
 };

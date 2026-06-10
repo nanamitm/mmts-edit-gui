@@ -28,6 +28,8 @@ public:
     // Encoder backend by ffmpeg name (e.g. "hevc_nvenc", "libkvazaar").
     void setEncoderName(const QString& name) { m_encoderName = name; }
 
+    static bool encoderAvailable(const QString& name);
+
     bool reencode(const QString& mmtsPath, const MmtsMap& map,
                   qint64 startRelMs, qint64 endRelMs,
                   std::vector<Au>& out, QString* errorMessage = nullptr);

@@ -19,7 +19,7 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
 - **複数区間 EDL**: Segments パネルでカット一覧を管理。Add / Split @ playhead /
   Delete で非破壊のカットリストを作成。編集後のプログラムは区間を順に連結したもの。
 - `.mmtsedit` サイドカー（version 1、`timeline` = 順序付き区間）の保存/読込。
-- 編集結果を **MPEG-2 TS(.ts) として書き出し**（`File > Export Edited Media...`）:
+- 編集結果を **MPEG-2 TS(.ts) として書き出し**（`File > Export Edited TS...`）:
   各区間を demux→dantto4k の RemuxerHandler で再多重化（HEVC+AAC を TS 化、再エンコード
   なし）。区間ごとに PTS/DTS を再ベースし、**継ぎ目のタイムスタンプを連続化**するため、
   汎用プレイヤーでもなめらかに再生できる（出力 TS の総尺＝各区間尺の合計）。tsduck を
@@ -76,7 +76,7 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
 
 ### 5. TS を書き出す
 
-- `File > Export Edited Media...` で、区間だけを連結した **MPEG-2 TS(.ts)** を生成します。
+- `File > Export Edited TS...` で、区間だけを連結した **MPEG-2 TS(.ts)** を生成します。
   各区間を demux→TS 再多重化し（HEVC+AAC、再エンコードなし）、PTS/DTS を連続化します。
   キャンセル付きの進捗ダイアログを表示します。
 - 継ぎ目のタイムスタンプが連続化されるため、汎用プレイヤーでもなめらかに再生できます。

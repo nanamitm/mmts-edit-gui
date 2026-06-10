@@ -31,6 +31,21 @@ void TimelineWidget::setSegments(const QVector<EditSegment>& segments, int selec
     update();
 }
 
+void TimelineWidget::setHighlightedSegment(int index)
+{
+    m_highlighted = index;
+    update();
+}
+
+void TimelineWidget::setDraftSegment(const EditSegment& segment, bool visible, bool hasIn, bool hasOut)
+{
+    m_draftSegment = segment;
+    m_showDraftSegment = visible;
+    m_draftHasIn = hasIn;
+    m_draftHasOut = hasOut;
+    update();
+}
+
 void TimelineWidget::setPlayhead(qint64 relMs)
 {
     m_playheadMs = relMs;
@@ -114,6 +129,15 @@ TimelineWidget::Drag TimelineWidget::hitTest(const QPoint& pos) const
         if (dIn <= kHandleGrabPx && dIn <= dOut)
             return Drag::In;
         if (dOut <= kHandleGrabPx)
+            return Drag::Out;
+    } else if (m_showDraftSegment) {
+        const int inX = xForTime(m_draftSegment.startMs);
+        const int outX = xForTime(m_draftSegment.endMs);
+        const int dIn = std::abs(pos.x() - inX);
+        const int dOut = std::abs(pos.x() - outX);
+        if (m_draftHasIn && dIn <= kHandleGrabPx && dIn <= dOut)
+            return Drag::In;
+        if (m_draftHasOut && dOut <= kHandleGrabPx)
             return Drag::Out;
     }
     if (laneRect().adjusted(0, -20, 0, 20).contains(pos))
@@ -211,29 +235,54 @@ void TimelineWidget::paintEvent(QPaintEvent*)
     }
 
     // EDL segment blocks.
+    auto drawHandles = [&](int a, int b, bool hasIn = true, bool hasOut = true) {
+        auto drawHandle = [&](int x, const QColor& color) {
+            p.setPen(QPen(color, 3));
+            p.drawLine(x, lane.top() - 18, x, lane.bottom() + 18);
+            p.setPen(Qt::NoPen);
+            p.setBrush(color);
+            const QPoint top(x, lane.top() - 18);
+            p.drawPolygon(QPolygon({ top + QPoint(-5, -6), top + QPoint(5, -6), top + QPoint(0, 2) }));
+        };
+        if (hasIn)
+            drawHandle(a, QColor(255, 92, 92));
+        if (hasOut)
+            drawHandle(b, QColor(255, 126, 58));
+    };
+
+    if (m_showDraftSegment && (m_selected < 0 || m_selected >= m_segments.size())) {
+        const int a = xForTime(m_draftSegment.startMs);
+        const int b = xForTime(m_draftSegment.endMs);
+        if (m_draftHasIn && m_draftHasOut && a != b) {
+            const QRect block = QRect(QPoint(a, lane.top()), QPoint(b, lane.bottom())).normalized();
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(255, 126, 58, 45));
+            p.drawRect(block);
+        }
+        drawHandles(a, b, m_draftHasIn, m_draftHasOut);
+    }
+
     for (int i = 0; i < m_segments.size(); ++i) {
         const int a = xForTime(m_segments[i].startMs);
         const int b = xForTime(m_segments[i].endMs);
         const QRect block = QRect(QPoint(a, lane.top()), QPoint(b, lane.bottom())).normalized();
         const bool sel = (i == m_selected);
+        const bool hi = (i == m_highlighted);
         p.setPen(Qt::NoPen);
-        p.setBrush(sel ? QColor(255, 126, 58, 70) : QColor(120, 160, 220, 45));
+        p.setBrush(sel ? QColor(255, 126, 58, 70)
+                       : (hi ? QColor(120, 160, 220, 95) : QColor(120, 160, 220, 45)));
         p.drawRect(block);
+        if (hi && !sel) {
+            p.setPen(QPen(QColor(170, 205, 255), 2));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(block.adjusted(0, 0, -1, -1));
+        }
         // index label
         p.setPen(QColor(230, 234, 240));
         p.drawText(block.adjusted(3, 0, -3, 0), Qt::AlignLeft | Qt::AlignVCenter, QString::number(i + 1));
 
         if (sel) {
-            auto drawHandle = [&](int x, const QColor& color) {
-                p.setPen(QPen(color, 3));
-                p.drawLine(x, lane.top() - 18, x, lane.bottom() + 18);
-                p.setPen(Qt::NoPen);
-                p.setBrush(color);
-                const QPoint top(x, lane.top() - 18);
-                p.drawPolygon(QPolygon({ top + QPoint(-5, -6), top + QPoint(5, -6), top + QPoint(0, 2) }));
-            };
-            drawHandle(a, QColor(255, 92, 92));
-            drawHandle(b, QColor(255, 126, 58));
+            drawHandles(a, b);
         }
     }
 

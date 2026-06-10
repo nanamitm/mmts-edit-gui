@@ -5,6 +5,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <atomic>
 #include <functional>
@@ -37,14 +38,17 @@ public:
     static bool exportTs(const QString& srcPath, const QString& dstPath,
                          const MmtsMap& map, const QVector<EditSegment>& segments,
                          qint64 sourceSizeBytes, QString* errorMessage,
-                         const std::function<bool(qint64, qint64)>& progress = {});
+                         const std::function<bool(qint64, qint64)>& progress = {},
+                         QStringList* warnings = nullptr,
+                         bool requireFrameAccurate = false);
 };
 
 class MmtsTsExportWorker : public QObject {
     Q_OBJECT
 public:
     void configure(const QString& srcPath, const QString& dstPath, const MmtsMap& map,
-                   const QVector<EditSegment>& segments, qint64 sourceSizeBytes);
+                   const QVector<EditSegment>& segments, qint64 sourceSizeBytes,
+                   bool requireFrameAccurate = false);
     void cancel() { m_cancel.store(true); }
 
 public slots:
@@ -52,7 +56,7 @@ public slots:
 
 signals:
     void progress(qint64 bytesDone, qint64 bytesTotal);
-    void finished(bool ok, const QString& error);
+    void finished(bool ok, const QString& error, const QStringList& warnings);
 
 private:
     QString m_srcPath;
@@ -60,5 +64,6 @@ private:
     MmtsMap m_map;
     QVector<EditSegment> m_segments;
     qint64 m_sourceSize = 0;
+    bool m_requireFrameAccurate = false;
     std::atomic<bool> m_cancel{false};
 };

@@ -1,11 +1,14 @@
 #include "MainWindow.h"
 
 #include "MmtsDecodeController.h"
+#include "HevcReencoder.h"
 #include "MmtsMapBuilder.h"
 #include "MmtsTsExporter.h"
 #include "PreviewWidget.h"
 
 #include <QAction>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -24,6 +27,7 @@
 #include <QToolBar>
 #include <QTabWidget>
 #include <QVBoxLayout>
+#include <algorithm>
 
 namespace {
 QString formatMs(qint64 ms)
@@ -52,7 +56,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(openEditAction, &QAction::triggered, this, &MainWindow::openEditDialog);
     auto* saveEditAction = new QAction("Save Edit...", this);
     connect(saveEditAction, &QAction::triggered, this, &MainWindow::saveEditDialog);
-    auto* exportAction = new QAction("Export Edited Media...", this);
+    auto* exportAction = new QAction("Export Edited TS...", this);
     connect(exportAction, &QAction::triggered, this, &MainWindow::exportMediaDialog);
     auto* fileMenu = menuBar()->addMenu("File");
     fileMenu->addAction(openMediaAction);
@@ -61,27 +65,30 @@ MainWindow::MainWindow(QWidget* parent)
     fileMenu->addSeparator();
     fileMenu->addAction(saveEditAction);
     fileMenu->addAction(exportAction);
+    fileMenu->setMinimumWidth(fontMetrics().horizontalAdvance("Export Edited TS...") + 48);
 
-    m_inSpin = new QSpinBox(this);
-    m_inSpin->setRange(0, 24 * 60 * 60 * 1000);
-    m_inSpin->setSuffix(" ms");
-    m_inSpin->setToolTip("Source in point");
-    m_outSpin = new QSpinBox(this);
-    m_outSpin->setRange(0, 24 * 60 * 60 * 1000);
-    m_outSpin->setSuffix(" ms");
-    m_outSpin->setToolTip("Source out point");
-    connect(m_inSpin, qOverload<int>(&QSpinBox::valueChanged), this, &MainWindow::updateSelectedFromSpins);
-    connect(m_outSpin, qOverload<int>(&QSpinBox::valueChanged), this, &MainWindow::updateSelectedFromSpins);
+    m_draftInLabel = new QLabel(formatMs(-1), this);
+    m_draftInLabel->setMinimumWidth(110);
+    m_draftInLabel->setToolTip("New range in point");
+    m_draftOutLabel = new QLabel(formatMs(-1), this);
+    m_draftOutLabel->setMinimumWidth(110);
+    m_draftOutLabel->setToolTip("New range out point");
+
+    m_editInSpin = new QSpinBox(this);
+    m_editInSpin->setRange(0, 24 * 60 * 60 * 1000);
+    m_editInSpin->setSuffix(" ms");
+    m_editInSpin->setToolTip("Selected range in point");
+    m_editOutSpin = new QSpinBox(this);
+    m_editOutSpin->setRange(0, 24 * 60 * 60 * 1000);
+    m_editOutSpin->setSuffix(" ms");
+    m_editOutSpin->setToolTip("Selected range out point");
+    m_editSegmentCombo = new QComboBox(this);
+    connect(m_editSegmentCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &MainWindow::selectSegment);
 
     auto* toolbar = addToolBar("Edit");
     toolbar->addAction(openMediaAction);
     toolbar->addAction(openAction);
     toolbar->addAction(openEditAction);
-    toolbar->addSeparator();
-    toolbar->addWidget(new QLabel("In", this));
-    toolbar->addWidget(m_inSpin);
-    toolbar->addWidget(new QLabel("Out", this));
-    toolbar->addWidget(m_outSpin);
     toolbar->addSeparator();
     auto* snapAction = new QAction("Snap to RAP", this);
     snapAction->setCheckable(true);
@@ -97,7 +104,8 @@ MainWindow::MainWindow(QWidget* parent)
     m_rapTable = new QTableWidget(this);
     m_seekTable = new QTableWidget(this);
 
-    // Segments (EDL) panel: cut list + add/split/delete.
+    // Add Range panel: draft range + list management. Selecting a row here only
+    // chooses the row for reorder/delete; range contents are edited elsewhere.
     m_segmentTable = new QTableWidget(this);
     m_segmentTable->setColumnCount(4);
     m_segmentTable->setHorizontalHeaderLabels({"#", "Start", "End", "Duration"});
@@ -110,29 +118,91 @@ MainWindow::MainWindow(QWidget* parent)
             selectSegment(row);
     });
 
-    auto* addBtn = new QPushButton("Add", this);
-    auto* splitBtn = new QPushButton("Split @ playhead", this);
+    auto* addBtn = new QPushButton("Add Range", this);
+    auto* clearDraftBtn = new QPushButton("Clear", this);
+    auto* setDraftInBtn = new QPushButton("Set In", this);
+    auto* setDraftOutBtn = new QPushButton("Set Out", this);
+    auto* upBtn = new QPushButton("Up", this);
+    auto* downBtn = new QPushButton("Down", this);
     auto* delBtn = new QPushButton("Delete", this);
     connect(addBtn, &QPushButton::clicked, this, &MainWindow::addSegment);
-    connect(splitBtn, &QPushButton::clicked, this, &MainWindow::splitSegmentAtPlayhead);
+    connect(clearDraftBtn, &QPushButton::clicked, this, &MainWindow::clearDraftSegment);
+    connect(setDraftInBtn, &QPushButton::clicked, this, &MainWindow::setInToCurrent);
+    connect(setDraftOutBtn, &QPushButton::clicked, this, &MainWindow::setOutToCurrent);
+    connect(upBtn, &QPushButton::clicked, this, &MainWindow::moveSelectedSegmentUp);
+    connect(downBtn, &QPushButton::clicked, this, &MainWindow::moveSelectedSegmentDown);
     connect(delBtn, &QPushButton::clicked, this, &MainWindow::deleteSelectedSegment);
 
-    auto* segButtons = new QWidget(this);
-    auto* segButtonsLayout = new QHBoxLayout(segButtons);
-    segButtonsLayout->setContentsMargins(4, 4, 4, 0);
-    segButtonsLayout->addWidget(addBtn);
-    segButtonsLayout->addWidget(splitBtn);
-    segButtonsLayout->addWidget(delBtn);
-    segButtonsLayout->addStretch(1);
+    auto* draftControls = new QWidget(this);
+    auto* draftLayout = new QHBoxLayout(draftControls);
+    draftLayout->setContentsMargins(4, 4, 4, 0);
+    draftLayout->addWidget(new QLabel("In", this));
+    draftLayout->addWidget(m_draftInLabel);
+    draftLayout->addWidget(setDraftInBtn);
+    draftLayout->addWidget(new QLabel("Out", this));
+    draftLayout->addWidget(m_draftOutLabel);
+    draftLayout->addWidget(setDraftOutBtn);
+    draftLayout->addWidget(addBtn);
+    draftLayout->addWidget(clearDraftBtn);
+    draftLayout->addStretch(1);
 
-    auto* segmentsPanel = new QWidget(this);
-    auto* segmentsLayout = new QVBoxLayout(segmentsPanel);
-    segmentsLayout->setContentsMargins(0, 0, 0, 0);
-    segmentsLayout->addWidget(segButtons);
-    segmentsLayout->addWidget(m_segmentTable, 1);
+    auto* listButtons = new QWidget(this);
+    auto* listButtonsLayout = new QHBoxLayout(listButtons);
+    listButtonsLayout->setContentsMargins(4, 4, 4, 0);
+    listButtonsLayout->addWidget(upBtn);
+    listButtonsLayout->addWidget(downBtn);
+    listButtonsLayout->addWidget(delBtn);
+    listButtonsLayout->addStretch(1);
+
+    auto* addRangePanel = new QWidget(this);
+    auto* addRangeLayout = new QVBoxLayout(addRangePanel);
+    addRangeLayout->setContentsMargins(0, 0, 0, 0);
+    addRangeLayout->addWidget(draftControls);
+    addRangeLayout->addWidget(listButtons);
+    addRangeLayout->addWidget(m_segmentTable, 1);
+
+    auto* editSetInBtn = new QPushButton("Set In", this);
+    auto* editSetOutBtn = new QPushButton("Set Out", this);
+    auto* applyEditBtn = new QPushButton("Apply", this);
+    auto* splitBtn = new QPushButton("Split @ playhead", this);
+    auto* editDelBtn = new QPushButton("Delete", this);
+    connect(editSetInBtn, &QPushButton::clicked, this, &MainWindow::setInToCurrent);
+    connect(editSetOutBtn, &QPushButton::clicked, this, &MainWindow::setOutToCurrent);
+    connect(applyEditBtn, &QPushButton::clicked, this, &MainWindow::applyEditedSegment);
+    connect(splitBtn, &QPushButton::clicked, this, &MainWindow::splitSegmentAtPlayhead);
+    connect(editDelBtn, &QPushButton::clicked, this, &MainWindow::deleteSelectedSegment);
+
+    auto* editControls = new QWidget(this);
+    auto* editLayout = new QHBoxLayout(editControls);
+    editLayout->setContentsMargins(4, 4, 4, 0);
+    editLayout->addWidget(new QLabel("Target", this));
+    editLayout->addWidget(m_editSegmentCombo);
+    editLayout->addWidget(new QLabel("In", this));
+    editLayout->addWidget(m_editInSpin);
+    editLayout->addWidget(editSetInBtn);
+    editLayout->addWidget(new QLabel("Out", this));
+    editLayout->addWidget(m_editOutSpin);
+    editLayout->addWidget(editSetOutBtn);
+    editLayout->addWidget(applyEditBtn);
+    editLayout->addWidget(splitBtn);
+    editLayout->addWidget(editDelBtn);
+    editLayout->addStretch(1);
+
+    auto* editRangePanel = new QWidget(this);
+    auto* editRangeLayout = new QVBoxLayout(editRangePanel);
+    editRangeLayout->setContentsMargins(0, 0, 0, 0);
+    editRangeLayout->addWidget(editControls);
+    auto* editHint = new QLabel("Use the target list above to choose which range to modify.", this);
+    editHint->setContentsMargins(6, 6, 6, 0);
+    editRangeLayout->addWidget(editHint);
+    editRangeLayout->addStretch(1);
 
     auto* tabs = new QTabWidget(this);
-    tabs->addTab(segmentsPanel, "Segments");
+    m_segmentTabs = new QTabWidget(this);
+    m_segmentTabs->addTab(addRangePanel, "Add Range");
+    m_segmentTabs->addTab(editRangePanel, "Edit Ranges");
+    connect(m_segmentTabs, &QTabWidget::currentChanged, this, [this] { syncTimeline(); });
+    tabs->addTab(m_segmentTabs, "Segments");
     tabs->addTab(m_trackTable, "Tracks");
     tabs->addTab(m_mptTable, "MPT");
     tabs->addTab(m_rapTable, "RAP");
@@ -207,9 +277,27 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_timeline, &TimelineWidget::seekRequested, this, &MainWindow::showFrameAt);
     connect(m_timeline, &TimelineWidget::segmentSelected, this, &MainWindow::selectSegment);
     connect(m_timeline, &TimelineWidget::inChanged, this,
-            [this](qint64 relMs) { m_inSpin->setValue(static_cast<int>(relMs)); });
+            [this](qint64 relMs) {
+        if (editRangesTabActive())
+            m_editInSpin->setValue(static_cast<int>(relMs));
+        else {
+            m_draftInSet = true;
+            m_draftInMs = relMs;
+            updateDraftLabels();
+            syncTimeline();
+        }
+    });
     connect(m_timeline, &TimelineWidget::outChanged, this,
-            [this](qint64 relMs) { m_outSpin->setValue(static_cast<int>(relMs)); });
+            [this](qint64 relMs) {
+        if (editRangesTabActive())
+            m_editOutSpin->setValue(static_cast<int>(relMs));
+        else {
+            m_draftOutSet = true;
+            m_draftOutMs = relMs;
+            updateDraftLabels();
+            syncTimeline();
+        }
+    });
 
     statusBar()->showMessage("Ready");
 }
@@ -239,8 +327,13 @@ bool MainWindow::openMap(const QString& path)
     const qint64 fullRangeMs = 24ll * 60 * 60 * 1000;
     const qint64 durationMs = m_map.durationMs > 0 ? m_map.durationMs : fullRangeMs;
     const int maximumMs = static_cast<int>(qMin(durationMs, fullRangeMs));
-    m_inSpin->setMaximum(maximumMs);
-    m_outSpin->setMaximum(maximumMs);
+    m_editInSpin->setMaximum(maximumMs);
+    m_editOutSpin->setMaximum(maximumMs);
+    m_draftInMs = 0;
+    m_draftOutMs = 0;
+    m_draftInSet = false;
+    m_draftOutSet = false;
+    updateDraftLabels();
     setSegments({}, -1); // start empty: the user adds the ranges to keep
     populateTables();
     statusBar()->showMessage(QString("Loaded %1").arg(path));
@@ -526,6 +619,35 @@ void MainWindow::exportMediaDialog()
         QMessageBox::warning(this, "Export", "Could not map any segment to RAP byte ranges.");
         return;
     }
+    int smartRenderSegments = 0;
+    constexpr qint64 kSmartRenderThresholdMs = 20;
+    for (const auto& seg : plan) {
+        if ((seg.copyStartMs - seg.inAbsMs) > kSmartRenderThresholdMs ||
+            (seg.outAbsMs - seg.copyEndMs) > kSmartRenderThresholdMs) {
+            ++smartRenderSegments;
+        }
+    }
+    constexpr auto kSmartRenderEncoder = "hevc_nvenc";
+    bool requireFrameAccurate = smartRenderSegments > 0;
+    if (requireFrameAccurate && !HevcReencoder::encoderAvailable(QString::fromLatin1(kSmartRenderEncoder))) {
+        QMessageBox box(QMessageBox::Warning, "Hardware Encoder Not Found",
+                        QString("%1 segment(s) require HEVC re-encoding for frame-accurate cuts.\n\n"
+                                "The current encoder is %2, but this FFmpeg build does not expose that encoder. "
+                                "If fallback is allowed, export can continue by using RAP boundaries, but the "
+                                "affected cut(s) may lose frame accuracy.")
+                            .arg(smartRenderSegments)
+                            .arg(kSmartRenderEncoder),
+                        QMessageBox::Yes | QMessageBox::No, this);
+        box.setDefaultButton(QMessageBox::No);
+        box.setButtonText(QMessageBox::Yes, "Continue");
+        box.setButtonText(QMessageBox::No, "Cancel");
+        QCheckBox allowFallback("Allow RAP-boundary fallback for this export", &box);
+        allowFallback.setChecked(false);
+        box.setCheckBox(&allowFallback);
+        if (box.exec() != QMessageBox::Yes)
+            return;
+        requireFrameAccurate = !allowFallback.isChecked();
+    }
 
     const QFileInfo srcInfo(m_mediaPath);
     const QString def = srcInfo.absolutePath() + "/" + srcInfo.completeBaseName() + "_edited.ts";
@@ -536,7 +658,7 @@ void MainWindow::exportMediaDialog()
     auto* thread = new QThread(this);
     auto* worker = new MmtsTsExportWorker;
     worker->moveToThread(thread);
-    worker->configure(m_mediaPath, path, m_map, m_segments, srcSize);
+    worker->configure(m_mediaPath, path, m_map, m_segments, srcSize, requireFrameAccurate);
 
     auto* dlg = new QProgressDialog("Exporting edited TS (remuxing)...", "Cancel", 0, 100, this);
     dlg->setWindowModality(Qt::WindowModal);
@@ -556,15 +678,24 @@ void MainWindow::exportMediaDialog()
     // busy (not running its event loop), so a queued call would not be delivered
     // until it finished. Direct lets the GUI thread set it now.
     connect(dlg, &QProgressDialog::canceled, worker, &MmtsTsExportWorker::cancel, Qt::DirectConnection);
-    connect(worker, &MmtsTsExportWorker::finished, this, [this, dlg, thread, path](bool ok, const QString& err) {
+    connect(worker, &MmtsTsExportWorker::finished, this,
+            [this, dlg, thread, path](bool ok, const QString& err, const QStringList& warnings) {
         dlg->close();
         dlg->deleteLater();
-        if (ok)
+        if (ok) {
             statusBar()->showMessage(QString("Exported %1").arg(path));
-        else if (err != QLatin1String("Cancelled"))
+            if (!warnings.isEmpty()) {
+                QMessageBox::warning(
+                    this, "Export Completed With Warnings",
+                    QString("Export finished, but some smart-rendered cuts fell back to RAP boundaries. "
+                            "Frame accuracy may be reduced for those cuts.\n\n%1")
+                        .arg(warnings.join("\n")));
+            }
+        } else if (err != QLatin1String("Cancelled")) {
             QMessageBox::warning(this, "Export Failed", err);
-        else
+        } else {
             statusBar()->showMessage("Export cancelled");
+        }
         thread->quit();
     });
     connect(thread, &QThread::finished, worker, &QObject::deleteLater);
@@ -585,8 +716,10 @@ qint64 MainWindow::sourceDurationMs() const
 void MainWindow::setSegments(const QVector<EditSegment>& segments, int selected)
 {
     m_segments = segments;
+    m_selectedSegment = selected >= 0 && selected < m_segments.size() ? selected : -1;
     rebuildSegmentTable();
-    selectSegment(selected >= 0 && selected < m_segments.size() ? selected : (m_segments.isEmpty() ? -1 : 0));
+    rebuildEditCombo();
+    selectSegment(m_selectedSegment);
 }
 
 void MainWindow::rebuildSegmentTable()
@@ -605,19 +738,47 @@ void MainWindow::rebuildSegmentTable()
         m_segmentTable->selectRow(m_selectedSegment);
 }
 
+void MainWindow::rebuildEditCombo()
+{
+    if (!m_editSegmentCombo)
+        return;
+
+    const QSignalBlocker blocker(m_editSegmentCombo);
+    m_editSegmentCombo->clear();
+    for (int i = 0; i < m_segments.size(); ++i) {
+        const auto& s = m_segments[i];
+        m_editSegmentCombo->addItem(QString("#%1  %2 - %3")
+            .arg(i + 1)
+            .arg(formatMs(s.startMs))
+            .arg(formatMs(s.endMs)));
+    }
+    if (m_selectedSegment >= 0 && m_selectedSegment < m_segments.size())
+        m_editSegmentCombo->setCurrentIndex(m_selectedSegment);
+    else
+        m_editSegmentCombo->setCurrentIndex(-1);
+}
+
 void MainWindow::selectSegment(int index)
 {
     m_selectedSegment = (index >= 0 && index < m_segments.size()) ? index : -1;
     const bool valid = m_selectedSegment >= 0;
+    const bool hasSource = sourceDurationMs() > 0;
 
-    m_inSpin->setEnabled(valid);
-    m_outSpin->setEnabled(valid);
+    m_draftInLabel->setEnabled(hasSource);
+    m_draftOutLabel->setEnabled(hasSource);
+    m_editInSpin->setEnabled(valid);
+    m_editOutSpin->setEnabled(valid);
     if (valid) {
         const auto& s = m_segments[m_selectedSegment];
-        const QSignalBlocker inBlocker(m_inSpin);
-        const QSignalBlocker outBlocker(m_outSpin);
-        m_inSpin->setValue(static_cast<int>(s.startMs));
-        m_outSpin->setValue(static_cast<int>(s.endMs));
+        const QSignalBlocker inBlocker(m_editInSpin);
+        const QSignalBlocker outBlocker(m_editOutSpin);
+        m_editInSpin->setValue(static_cast<int>(s.startMs));
+        m_editOutSpin->setValue(static_cast<int>(s.endMs));
+    } else {
+        const QSignalBlocker inBlocker(m_editInSpin);
+        const QSignalBlocker outBlocker(m_editOutSpin);
+        m_editInSpin->setValue(0);
+        m_editOutSpin->setValue(0);
     }
     {
         const QSignalBlocker blocker(m_segmentTable);
@@ -626,37 +787,62 @@ void MainWindow::selectSegment(int index)
         else
             m_segmentTable->clearSelection();
     }
+    rebuildEditCombo();
     syncTimeline();
 }
 
 void MainWindow::syncTimeline()
 {
-    if (m_timeline)
-        m_timeline->setSegments(m_segments, m_selectedSegment);
+    if (m_timeline) {
+        const bool editMode = editRangesTabActive() && m_selectedSegment >= 0 && m_selectedSegment < m_segments.size();
+        m_timeline->setSegments(m_segments, editMode ? m_selectedSegment : -1);
+        m_timeline->setHighlightedSegment(!editMode ? m_selectedSegment : -1);
+        const qint64 dur = sourceDurationMs();
+        const bool showDraft = (!editMode && dur > 0 && (m_draftInSet || m_draftOutSet));
+        const qint64 in = qBound<qint64>(0, m_draftInMs, dur);
+        const qint64 out = qBound<qint64>(0, m_draftOutMs, dur);
+        const qint64 draftIn = m_draftInSet ? in : out;
+        const qint64 draftOut = m_draftOutSet ? out : in;
+        m_timeline->setDraftSegment(EditSegment{qMin(draftIn, draftOut), qMax(draftIn, draftOut)},
+                                    showDraft, m_draftInSet, m_draftOutSet);
+    }
 }
 
 void MainWindow::updateSelectedFromSpins()
 {
-    if (m_selectedSegment < 0 || m_selectedSegment >= m_segments.size())
-        return;
-    if (m_outSpin->value() < m_inSpin->value()) {
-        const QSignalBlocker blocker(m_outSpin);
-        m_outSpin->setValue(m_inSpin->value());
-    }
-    auto& s = m_segments[m_selectedSegment];
-    s.startMs = m_inSpin->value();
-    s.endMs = m_outSpin->value();
-
-    const QSignalBlocker blocker(m_segmentTable);
-    m_segmentTable->setItem(m_selectedSegment, 1, new QTableWidgetItem(formatMs(s.startMs)));
-    m_segmentTable->setItem(m_selectedSegment, 2, new QTableWidgetItem(formatMs(s.endMs)));
-    m_segmentTable->setItem(m_selectedSegment, 3, new QTableWidgetItem(formatMs(s.durationMs())));
     syncTimeline();
 }
 
+void MainWindow::updateDraftLabels()
+{
+    if (m_draftInLabel)
+        m_draftInLabel->setText(m_draftInSet ? formatMs(m_draftInMs) : QStringLiteral("--:--:--.---"));
+    if (m_draftOutLabel)
+        m_draftOutLabel->setText(m_draftOutSet ? formatMs(m_draftOutMs) : QStringLiteral("--:--:--.---"));
+}
+
+void MainWindow::applyEditedSegment()
+{
+    if (!ensureSegmentSelected())
+        return;
+
+    const qint64 dur = sourceDurationMs();
+    const qint64 in = qBound<qint64>(0, static_cast<qint64>(m_editInSpin->value()), dur);
+    const qint64 out = qBound<qint64>(0, static_cast<qint64>(m_editOutSpin->value()), dur);
+    if (in == out) {
+        statusBar()->showMessage("Edited range needs different In and Out points");
+        return;
+    }
+
+    m_segments[m_selectedSegment] = EditSegment{qMin(in, out), qMax(in, out)};
+    rebuildSegmentTable();
+    rebuildEditCombo();
+    selectSegment(m_selectedSegment);
+    statusBar()->showMessage(QString("Updated range %1").arg(m_selectedSegment + 1));
+}
+
 // Selects a segment to edit without ever creating one: keeps the current
-// selection, otherwise falls back to the first segment. Returns false only when
-// there are no segments at all (so Set In/Out never silently add a new track).
+// selection, otherwise falls back to the first segment.
 bool MainWindow::ensureSegmentSelected()
 {
     if (m_selectedSegment >= 0 && m_selectedSegment < m_segments.size())
@@ -669,20 +855,40 @@ bool MainWindow::ensureSegmentSelected()
 
 void MainWindow::setInToCurrent()
 {
-    if (!ensureSegmentSelected()) {
-        statusBar()->showMessage("No segment to edit — press Add first");
+    if (sourceDurationMs() <= 0) {
+        statusBar()->showMessage("Open media or a map first");
         return;
     }
-    m_inSpin->setValue(static_cast<int>(m_currentRelMs));
+    if (editRangesTabActive()) {
+        if (!ensureSegmentSelected())
+            return;
+        m_editInSpin->setValue(static_cast<int>(m_currentRelMs));
+        syncTimeline();
+        return;
+    }
+    m_draftInSet = true;
+    m_draftInMs = m_currentRelMs;
+    updateDraftLabels();
+    syncTimeline();
 }
 
 void MainWindow::setOutToCurrent()
 {
-    if (!ensureSegmentSelected()) {
-        statusBar()->showMessage("No segment to edit — press Add first");
+    if (sourceDurationMs() <= 0) {
+        statusBar()->showMessage("Open media or a map first");
         return;
     }
-    m_outSpin->setValue(static_cast<int>(m_currentRelMs));
+    if (editRangesTabActive()) {
+        if (!ensureSegmentSelected())
+            return;
+        m_editOutSpin->setValue(static_cast<int>(m_currentRelMs));
+        syncTimeline();
+        return;
+    }
+    m_draftOutSet = true;
+    m_draftOutMs = m_currentRelMs;
+    updateDraftLabels();
+    syncTimeline();
 }
 
 void MainWindow::addSegment()
@@ -690,18 +896,68 @@ void MainWindow::addSegment()
     const qint64 dur = sourceDurationMs();
     if (dur <= 0)
         return;
+    if (!m_draftInSet || !m_draftOutSet) {
+        statusBar()->showMessage("Set both In and Out before adding a range");
+        return;
+    }
     EditSegment s;
-    s.startMs = qBound<qint64>(0, m_currentRelMs, dur);
-    s.endMs = dur;
-    if (s.endMs <= s.startMs)
-        s.startMs = qMax<qint64>(0, dur - 1000);
+    const qint64 in = qBound<qint64>(0, m_draftInMs, dur);
+    const qint64 out = qBound<qint64>(0, m_draftOutMs, dur);
+    if (in == out) {
+        statusBar()->showMessage("New range needs different In and Out points");
+        return;
+    }
+    s.startMs = qMin(in, out);
+    s.endMs = qMax(in, out);
     m_segments.push_back(s);
+    m_selectedSegment = m_segments.size() - 1;
     rebuildSegmentTable();
-    selectSegment(m_segments.size() - 1);
+    rebuildEditCombo();
+    clearDraftSegment();
+    {
+        const QSignalBlocker blocker(m_segmentTable);
+        m_segmentTable->selectRow(m_selectedSegment);
+    }
+    statusBar()->showMessage(QString("Added range %1").arg(m_segments.size()));
+}
+
+void MainWindow::clearDraftSegment()
+{
+    const qint64 cur = qBound<qint64>(0, m_currentRelMs, sourceDurationMs());
+    m_draftInMs = cur;
+    m_draftOutMs = cur;
+    m_draftInSet = false;
+    m_draftOutSet = false;
+    updateDraftLabels();
+    syncTimeline();
+}
+
+void MainWindow::moveSelectedSegmentUp()
+{
+    if (m_selectedSegment <= 0 || m_selectedSegment >= m_segments.size())
+        return;
+    std::swap(m_segments[m_selectedSegment], m_segments[m_selectedSegment - 1]);
+    --m_selectedSegment;
+    rebuildSegmentTable();
+    rebuildEditCombo();
+    syncTimeline();
+}
+
+void MainWindow::moveSelectedSegmentDown()
+{
+    if (m_selectedSegment < 0 || m_selectedSegment >= m_segments.size() - 1)
+        return;
+    std::swap(m_segments[m_selectedSegment], m_segments[m_selectedSegment + 1]);
+    ++m_selectedSegment;
+    rebuildSegmentTable();
+    rebuildEditCombo();
+    syncTimeline();
 }
 
 void MainWindow::splitSegmentAtPlayhead()
 {
+    if (!ensureSegmentSelected())
+        return;
     const qint64 ph = m_currentRelMs;
     for (int i = 0; i < m_segments.size(); ++i) {
         auto& s = m_segments[i];
@@ -709,8 +965,10 @@ void MainWindow::splitSegmentAtPlayhead()
             EditSegment right{ph, s.endMs};
             s.endMs = ph;
             m_segments.insert(i + 1, right);
+            m_selectedSegment = i + 1;
             rebuildSegmentTable();
-            selectSegment(i + 1);
+            rebuildEditCombo();
+            selectSegment(m_selectedSegment);
             statusBar()->showMessage(QString("Split segment %1 at %2").arg(i + 1).arg(formatMs(ph)));
             return;
         }
@@ -723,8 +981,15 @@ void MainWindow::deleteSelectedSegment()
     if (m_selectedSegment < 0 || m_selectedSegment >= m_segments.size())
         return;
     m_segments.removeAt(m_selectedSegment);
+    m_selectedSegment = m_segments.isEmpty() ? -1 : qMin(m_selectedSegment, m_segments.size() - 1);
     rebuildSegmentTable();
-    selectSegment(m_segments.isEmpty() ? -1 : qMin(m_selectedSegment, m_segments.size() - 1));
+    rebuildEditCombo();
+    selectSegment(m_selectedSegment);
+}
+
+bool MainWindow::editRangesTabActive() const
+{
+    return m_segmentTabs && m_segmentTabs->currentIndex() == 1;
 }
 
 void MainWindow::populateTables()

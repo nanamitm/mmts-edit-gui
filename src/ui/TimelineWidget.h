@@ -18,6 +18,8 @@ public:
 
     void setMap(const MmtsMap& map);
     void setSegments(const QVector<EditSegment>& segments, int selected);
+    void setHighlightedSegment(int index);
+    void setDraftSegment(const EditSegment& segment, bool visible, bool hasIn = true, bool hasOut = true);
     void setPlayhead(qint64 relMs);
     void setSnapToRap(bool enabled);
 
@@ -46,7 +48,12 @@ private:
 
     MmtsMap m_map;
     QVector<EditSegment> m_segments;
+    EditSegment m_draftSegment;
+    bool m_showDraftSegment = false;
+    bool m_draftHasIn = true;
+    bool m_draftHasOut = true;
     int m_selected = -1;
+    int m_highlighted = -1;
     qint64 m_playheadMs = 0;
     bool m_snapToRap = true;
     Drag m_drag = Drag::None;
