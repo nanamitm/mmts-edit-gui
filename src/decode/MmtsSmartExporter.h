@@ -22,11 +22,14 @@
 // MPT packets inside the boundary windows are rewritten so their
 // mpu_timestamp / mpu_extended_timestamp entries describe the synthesized
 // MPUs (dantto4k mmtSplice primitives); audio/subtitle MPUs are gated to
-// [IN, OUT) at MPU granularity; all other packets pass through untouched.
+// [IN, OUT) at MPU granularity.
 //
-// Timestamps are NOT rebased: like the RAP-aligned byte-copy export, each
-// segment keeps its original MMT timeline, so multi-segment exports carry a
-// PTS discontinuity at the seams (playable with the dantto4k MPU-resync fix).
+// The output timeline is CONTINUOUS: in MMT all presentation timestamps live
+// in the MPT's mpu_timestamp entries (media packets carry none), so segments
+// after the first are rebased by rewriting those entries in every MPT (and
+// the NTP packets, which seed the PCR on TS conversion). Media packets stay
+// byte-identical; only signaling carries the shift. MPU/packet sequence
+// numbers still jump at the seams, which the dantto4k MPU-resync fix handles.
 class MmtsSmartExporter {
 public:
     static bool exportMmts(const QString& srcPath, const QString& dstPath,

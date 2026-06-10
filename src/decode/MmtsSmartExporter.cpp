@@ -406,8 +406,9 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
     }
 
     HevcReencoder reenc;
-    std::unordered_map<quint64, quint64> mpuTimeUs; // (pid,seq) -> presentation us
+    std::unordered_map<quint64, quint64> mpuTimeUs; // (pid,seq) -> presentation us (source timeline)
     qint64 doneBytes = 0;
+    qint64 desiredStartUs = -1; // output-timeline cursor; first segment keeps its own base
 
     std::vector<uint8_t> outBuf;
     outBuf.reserve(8 * 1024 * 1024);
@@ -513,6 +514,13 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         const quint64 gateInUs = static_cast<quint64>(effInMs) * 1000ULL;
         const quint64 gateOutUs = static_cast<quint64>(effOutMs) * 1000ULL;
 
+        // Timestamp rebase: segments after the first are shifted back so the
+        // output timeline is continuous (media packets stay byte-identical;
+        // only MPT timestamp entries and NTP packets carry absolute time).
+        if (desiredStartUs < 0)
+            desiredStartUs = effInMs * 1000;
+        const qint64 shiftUs = desiredStartUs - effInMs * 1000;
+
         // --- single streaming pass over [scanStart, endByte)
         enum class Region { FilterIn, Copy, FilterOut };
         SigTracker sig;
@@ -539,23 +547,23 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         };
 
         const auto handleMpt = [&](SigTracker::PidState& st, const std::vector<uint8_t>& mpt,
-                                   uint8_t paVersion, bool filterRegion, bool isLeadBoundary) {
+                                   uint8_t paVersion, Region rgn) {
             for (const auto& e : MmtTlv::Splice::collectMpuTimestamps(mpt))
                 mpuTimeUs[pidSeqKey(e.packetId, e.mpuSequenceNumber)] = e.presentationTimeUs;
-            if (!filterRegion)
-                return;
-            quint32 dropMin, dropMax;
-            const std::vector<MmtTlv::Splice::MpuTiming>* newMpus;
-            if (isLeadBoundary) {
+            quint32 dropMin = 1, dropMax = 0; // empty range (copy region: shift only)
+            const std::vector<MmtTlv::Splice::MpuTiming> kNone;
+            const std::vector<MmtTlv::Splice::MpuTiming>* newMpus = &kNone;
+            if (rgn == Region::FilterIn) {
                 dropMin = 0;
                 dropMax = bS.mpuSeq > 0 ? bS.mpuSeq - 1 : 0;
                 newMpus = &leadTimings;
-            } else {
+            } else if (rgn == Region::FilterOut) {
                 dropMin = bE.mpuSeq;
                 dropMax = 0xFFFFFFFFu;
                 newMpus = &tailTimings;
             }
-            const auto patched = MmtTlv::Splice::patchMptVideoTimestamps(mpt, videoPid, *newMpus, dropMin, dropMax);
+            const auto patched = MmtTlv::Splice::patchMptVideoTimestamps(mpt, videoPid, *newMpus,
+                                                                         dropMin, dropMax, shiftUs);
             if (!patched || st.pending.empty()) {
                 for (const auto& pp : st.pending)
                     writeBytes(pp.bytes.data(), pp.bytes.size());
@@ -586,22 +594,31 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
             const bool filter = region != Region::Copy;
 
             if (!info.mmtp) {
-                writeBytes(data, info.size); // NTP / TCS / null packets pass everywhere
-            } else if (info.signaling) {
-                const bool buffering = filter;
-                if (!buffering)
+                // NTP / TCS / null packets pass everywhere; NTP carries absolute
+                // time (PCR source), so rebased segments shift it too.
+                if (shiftUs != 0 && info.tlvType == 0x02) {
+                    std::vector<uint8_t> ntp(data, data + info.size);
+                    MmtTlv::Splice::shiftTlvNtpTimestamps(ntp, shiftUs);
+                    writeBytes(ntp.data(), ntp.size());
+                } else {
                     writeBytes(data, info.size);
+                }
+            } else if (info.signaling) {
+                // Signaling is buffered per message in every region: MPT-bearing
+                // PA messages are replaced by a rewritten packet (synthesized MPU
+                // entries at the boundaries, timestamp shift everywhere), other
+                // messages are passed through unchanged on completion.
                 auto& st = sig.state(info.packetId);
                 bool replaced = false;
-                for (auto& msg : sig.feed(data, info, buffering)) {
+                for (auto& msg : sig.feed(data, info, true)) {
                     std::vector<uint8_t> mpt;
                     uint8_t paVersion = 0;
                     if (extractMptFromMessage(msg, &mpt, &paVersion)) {
-                        handleMpt(st, mpt, paVersion, filter, region == Region::FilterIn);
+                        handleMpt(st, mpt, paVersion, region);
                         replaced = true;
                     }
                 }
-                if (buffering && !replaced && !st.inFragment) {
+                if (!replaced && !st.inFragment) {
                     // Message(s) completed without an MPT: keep the original packets.
                     for (const auto& pp : st.pending)
                         writeBytes(pp.bytes.data(), pp.bytes.size());
@@ -634,6 +651,7 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         if (!leadEmitted)
             emitPackets(leadPackets); // copy region empty and never entered
         emitPackets(tailPackets);
+        desiredStartUs += (effOutMs - effInMs) * 1000;
 
         doneBytes += seg.endByte - lastProgressPos;
         if (progress && !progress(doneBytes, totalBytes))

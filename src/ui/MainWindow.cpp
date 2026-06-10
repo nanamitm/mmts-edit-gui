@@ -757,21 +757,6 @@ void MainWindow::exportMmtsDialog()
         requireFrameAccurate = !allowFallback.isChecked();
     }
 
-    // Unlike the TS export, the .mmts timeline is not rebased: multiple
-    // segments keep their original timestamps, so seams carry a PTS
-    // discontinuity (players resync at the next RAP).
-    if (plan.size() > 1) {
-        QMessageBox box(QMessageBox::Information, "Export Edited MMTS",
-                        QStringLiteral(
-                            "MMTS export keeps the original timestamps: each seam between segments "
-                            "has a PTS discontinuity (players resync there).\n\n"
-                            "For a continuous timeline, use \"Export Edited TS...\"."),
-                        QMessageBox::Ok | QMessageBox::Cancel, this);
-        box.setDefaultButton(QMessageBox::Ok);
-        if (box.exec() != QMessageBox::Ok)
-            return;
-    }
-
     const QFileInfo srcInfo(m_mediaPath);
     const QString def = srcInfo.absolutePath() + "/" + srcInfo.completeBaseName() + "_edited.mmts";
     const QString path = QFileDialog::getSaveFileName(this, "Export Edited MMTS", def, "MMTS (*.mmts)");
