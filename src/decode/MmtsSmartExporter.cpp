@@ -342,11 +342,14 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
 
     quint16 videoPid = 0;
     std::vector<quint16> gatedPids; // audio + subtitle: time-gated to [IN, OUT)
+    std::vector<quint16> audioPids;
     for (const auto& t : map.tracks) {
         if (t.type == MmtsTrack::Type::Video && videoPid == 0)
             videoPid = t.packetId;
         else if (t.type == MmtsTrack::Type::Audio || t.type == MmtsTrack::Type::Subtitle)
             gatedPids.push_back(t.packetId);
+        if (t.type == MmtsTrack::Type::Audio)
+            audioPids.push_back(t.packetId);
     }
     if (videoPid == 0) {
         if (errorMessage) *errorMessage = QStringLiteral("The map has no video track.");
@@ -601,6 +604,29 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                 writeBytes(pkt.data(), pkt.size());
         };
 
+        // Broadcast muxes carry audio ~0.5-1 s behind the video at the same
+        // byte position, so cutting both at IN leaves the segment head with a
+        // video-only stretch that can starve players of audio (clock stalls,
+        // sample allocators run dry). Hold the segment's video packets back
+        // until the first in-gate audio packet has been emitted, then release
+        // them: contents are unchanged, only the interleave is normalized.
+        std::vector<std::pair<std::vector<uint8_t>, PacketInfo>> heldVideo;
+        bool videoHold = !audioPids.empty();
+        const auto releaseHeldVideo = [&] {
+            if (!videoHold)
+                return;
+            videoHold = false;
+            for (const auto& [bytes, pi] : heldVideo)
+                emitMmtp(bytes.data(), pi);
+            heldVideo.clear();
+        };
+        const auto emitVideo = [&](const uint8_t* d, const PacketInfo& pi) {
+            if (videoHold)
+                heldVideo.emplace_back(std::vector<uint8_t>(d, d + pi.size), pi);
+            else
+                emitMmtp(d, pi);
+        };
+
         // --- single streaming pass over [scanStart, endByte)
         enum class Region { FilterIn, Copy, FilterOut };
         SigTracker sig;
@@ -608,8 +634,13 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         bool leadEmitted = false;
 
         const auto emitPackets = [&](const std::vector<std::vector<uint8_t>>& pkts) {
-            for (const auto& p : pkts)
-                emitOwnPacket(p);
+            for (const auto& p : pkts) { // synthesized lead/tail video MPUs
+                PacketInfo pi;
+                if (MmtTlv::Splice::parsePacket(p.data(), p.size(), pi) && pi.mmtp)
+                    emitVideo(p.data(), pi);
+                else
+                    emitOwnPacket(p);
+            }
         };
         const auto flushPending = [&] {
             for (auto& [pid, st] : sig.pids()) {
@@ -723,7 +754,7 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                 }
             } else if (info.packetId == videoPid) {
                 if (!filter)
-                    emitMmtp(data, info);
+                    emitVideo(data, info);
                 // dropped in boundary regions (replaced by the synthesized MPUs)
             } else if (info.mpu && isGatedPid(info.packetId)) {
                 // Gate audio/subtitle MPUs to [IN, OUT): in the boundary
@@ -735,8 +766,18 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                 const bool known = it != mpuTimeUs.end();
                 const bool inGate = known && it->second >= gateInUs && it->second < gateOutUs;
                 const bool pass = filter ? inGate : (!known || inGate);
-                if (pass)
+                if (qEnvironmentVariableIsSet("MMTS_EXPORT_DEBUG") && info.packetId == gatedPids.front()) {
+                    fprintf(stderr, "audio pid=%04X seq=%u region=%d known=%d t=%lld gateIn=%lld pass=%d off=%llx\n",
+                            info.packetId, info.mpuSequenceNumber, (int)region, known,
+                            known ? (long long)(it->second / 1000) : -1,
+                            (long long)(gateInUs / 1000), pass ? 1 : 0, (unsigned long long)offset);
+                }
+                if (pass) {
                     emitMmtp(data, info);
+                    if (videoHold &&
+                        std::find(audioPids.begin(), audioPids.end(), info.packetId) != audioPids.end())
+                        releaseHeldVideo(); // audio is flowing: restore normal order
+                }
             } else {
                 emitMmtp(data, info);
             }
@@ -751,11 +792,13 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         if (corrupt)
             return fail(QString("Segment #%1: source does not parse as TLV near %2.").arg(segmentNo).arg(offset));
 
-        // End of segment: flush any buffered signaling, then the tail MPU.
+        // End of segment: flush any buffered signaling, then the tail MPU and
+        // any video still held back (e.g. a segment with no in-gate audio).
         flushPending();
         if (!leadEmitted)
             emitPackets(leadPackets); // copy region empty and never entered
         emitPackets(tailPackets);
+        releaseHeldVideo();
         desiredStartUs += (effOutMs - effInMs) * 1000;
 
         doneBytes += seg.endByte - lastProgressPos;
