@@ -410,6 +410,15 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
     qint64 doneBytes = 0;
     qint64 desiredStartUs = -1; // output-timeline cursor; first segment keeps its own base
 
+    // Sequence renumbering state: the output stream gets continuous MMTP
+    // packet sequence numbers, CIP sequence numbers and MPU sequence numbers
+    // per pid across the segment seams (header fields only; payloads are
+    // untouched). First-seen values are adopted from the source so the first
+    // segment stays close to the original numbering.
+    std::map<quint16, quint32> nextPktSeq;  // per packetId
+    std::map<quint16, quint8> nextCipSeq;   // per contextId (4-bit)
+    std::map<quint16, qint64> lastOutMpu;   // per packetId, output numbering
+
     std::vector<uint8_t> outBuf;
     outBuf.reserve(8 * 1024 * 1024);
     const auto flushOut = [&] {
@@ -521,6 +530,77 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
             desiredStartUs = effInMs * 1000;
         const qint64 shiftUs = desiredStartUs - effInMs * 1000;
 
+        // Per-pid MPU renumbering offsets (output = source + offset) for this
+        // segment. Video is known up front from the boundary prescan; audio /
+        // subtitle anchor on their lowest in-gate MPT entry (announced before
+        // the MPU itself arrives), refinable downward until the pid's first
+        // emission. Other MPU pids (data carousels) keep their source numbers:
+        // their sequence numbers identify carousel items and cycle by design.
+        std::map<quint16, qint64> mpuOff;
+        std::map<quint16, bool> mpuOffFrozen;
+        {
+            const quint64 firstSrcVideo = leadIn.empty() ? bS.mpuSeq : bS.mpuSeq - 1;
+            const auto it = lastOutMpu.find(videoPid);
+            mpuOff[videoPid] = (it != lastOutMpu.end())
+                ? (it->second + 1) - static_cast<qint64>(firstSrcVideo)
+                : 0;
+        }
+
+        // Single emission path for MMTP packets: appends the packet and
+        // rewrites the CIP sequence, packet sequence and MPU sequence fields
+        // so the output numbering is continuous per pid across the seams.
+        const auto emitMmtp = [&](const uint8_t* d, const PacketInfo& pi) {
+            const size_t base = outBuf.size();
+            outBuf.insert(outBuf.end(), d, d + pi.size);
+            if (pi.size >= 7) { // CIP sequence: low 4 bits of the byte at +5
+                quint8& cs = nextCipSeq.try_emplace(pi.contextId,
+                                                    static_cast<quint8>(outBuf[base + 5] & 0x0F)).first->second;
+                outBuf[base + 5] = static_cast<uint8_t>((outBuf[base + 5] & 0xF0) | (cs & 0x0F));
+                cs = (cs + 1) & 0x0F;
+            }
+            if (pi.mmtpSequenceOffset) {
+                quint32& s = nextPktSeq.try_emplace(pi.packetId, pi.packetSequenceNumber).first->second;
+                uint8_t* p = outBuf.data() + base + pi.mmtpSequenceOffset;
+                p[0] = static_cast<uint8_t>(s >> 24);
+                p[1] = static_cast<uint8_t>(s >> 16);
+                p[2] = static_cast<uint8_t>(s >> 8);
+                p[3] = static_cast<uint8_t>(s);
+                ++s;
+            }
+            if (pi.mpu && pi.mpuSequenceOffset) {
+                auto off = mpuOff.find(pi.packetId);
+                if (off == mpuOff.end()) {
+                    // Gated pid emitted before any in-gate entry (should not
+                    // happen: gating needs a known entry) falls back to the
+                    // arrival anchor; other pids keep their source numbers.
+                    qint64 v = 0;
+                    if (isGatedPid(pi.packetId)) {
+                        const auto last = lastOutMpu.find(pi.packetId);
+                        if (last != lastOutMpu.end())
+                            v = (last->second + 1) - static_cast<qint64>(pi.mpuSequenceNumber);
+                    }
+                    off = mpuOff.emplace(pi.packetId, v).first;
+                }
+                mpuOffFrozen[pi.packetId] = true;
+                const quint32 outSeq = static_cast<quint32>(pi.mpuSequenceNumber + off->second);
+                uint8_t* p = outBuf.data() + base + pi.mpuSequenceOffset;
+                p[0] = static_cast<uint8_t>(outSeq >> 24);
+                p[1] = static_cast<uint8_t>(outSeq >> 16);
+                p[2] = static_cast<uint8_t>(outSeq >> 8);
+                p[3] = static_cast<uint8_t>(outSeq);
+                lastOutMpu[pi.packetId] = outSeq;
+            }
+            if (outBuf.size() >= 4 * 1024 * 1024)
+                flushOut();
+        };
+        const auto emitOwnPacket = [&](const std::vector<uint8_t>& pkt) {
+            PacketInfo pi;
+            if (MmtTlv::Splice::parsePacket(pkt.data(), pkt.size(), pi) && pi.mmtp)
+                emitMmtp(pkt.data(), pi);
+            else
+                writeBytes(pkt.data(), pkt.size());
+        };
+
         // --- single streaming pass over [scanStart, endByte)
         enum class Region { FilterIn, Copy, FilterOut };
         SigTracker sig;
@@ -529,12 +609,12 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
 
         const auto emitPackets = [&](const std::vector<std::vector<uint8_t>>& pkts) {
             for (const auto& p : pkts)
-                writeBytes(p.data(), p.size());
+                emitOwnPacket(p);
         };
         const auto flushPending = [&] {
             for (auto& [pid, st] : sig.pids()) {
                 for (const auto& pp : st.pending)
-                    writeBytes(pp.bytes.data(), pp.bytes.size());
+                    emitMmtp(pp.bytes.data(), pp.info);
                 st.pending.clear();
             }
         };
@@ -548,8 +628,25 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
 
         const auto handleMpt = [&](SigTracker::PidState& st, const std::vector<uint8_t>& mpt,
                                    uint8_t paVersion, Region rgn) {
-            for (const auto& e : MmtTlv::Splice::collectMpuTimestamps(mpt))
+            for (const auto& e : MmtTlv::Splice::collectMpuTimestamps(mpt)) {
                 mpuTimeUs[pidSeqKey(e.packetId, e.mpuSequenceNumber)] = e.presentationTimeUs;
+                // Anchor the pid's renumbering offset on the lowest announced
+                // in-gate MPU (the entry precedes the MPU itself, so sparse
+                // pids like subtitles get their offset in time). MPTs can
+                // re-announce older MPUs, so refine downward until the pid's
+                // first emission freezes the offset.
+                if (e.packetId != videoPid && isGatedPid(e.packetId) &&
+                    !mpuOffFrozen[e.packetId] && lastOutMpu.count(e.packetId) &&
+                    e.presentationTimeUs >= gateInUs && e.presentationTimeUs < gateOutUs) {
+                    const qint64 cand =
+                        (lastOutMpu[e.packetId] + 1) - static_cast<qint64>(e.mpuSequenceNumber);
+                    const auto it = mpuOff.find(e.packetId);
+                    if (it == mpuOff.end())
+                        mpuOff[e.packetId] = cand;
+                    else if (cand > it->second)
+                        it->second = cand;
+                }
+            }
             quint32 dropMin = 1, dropMax = 0; // empty range (copy region: shift only)
             const std::vector<MmtTlv::Splice::MpuTiming> kNone;
             const std::vector<MmtTlv::Splice::MpuTiming>* newMpus = &kNone;
@@ -563,16 +660,16 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                 newMpus = &tailTimings;
             }
             const auto patched = MmtTlv::Splice::patchMptVideoTimestamps(mpt, videoPid, *newMpus,
-                                                                         dropMin, dropMax, shiftUs);
+                                                                         dropMin, dropMax, shiftUs, &mpuOff);
             if (!patched || st.pending.empty()) {
                 for (const auto& pp : st.pending)
-                    writeBytes(pp.bytes.data(), pp.bytes.size());
+                    emitMmtp(pp.bytes.data(), pp.info);
             } else {
                 const auto& first = st.pending.front().info;
                 const auto pkt = MmtTlv::Splice::packPaMptPacket(
                     *patched, first.packetId, first.contextId, first.packetSequenceNumber,
                     first.deliveryTimestamp, paVersion);
-                writeBytes(pkt.data(), pkt.size());
+                emitOwnPacket(pkt);
             }
             st.pending.clear();
         };
@@ -621,19 +718,27 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                 if (!replaced && !st.inFragment) {
                     // Message(s) completed without an MPT: keep the original packets.
                     for (const auto& pp : st.pending)
-                        writeBytes(pp.bytes.data(), pp.bytes.size());
+                        emitMmtp(pp.bytes.data(), pp.info);
                     st.pending.clear();
                 }
             } else if (info.packetId == videoPid) {
                 if (!filter)
-                    writeBytes(data, info.size);
+                    emitMmtp(data, info);
                 // dropped in boundary regions (replaced by the synthesized MPUs)
-            } else if (filter && info.mpu && isGatedPid(info.packetId)) {
+            } else if (info.mpu && isGatedPid(info.packetId)) {
+                // Gate audio/subtitle MPUs to [IN, OUT): in the boundary
+                // windows an unknown presentation time drops the MPU; in the
+                // copy region only a confirmed out-of-gate time does (audio
+                // interleaved around the copy start can predate IN, and
+                // passing it would also break the renumbering anchor).
                 const auto it = mpuTimeUs.find(pidSeqKey(info.packetId, info.mpuSequenceNumber));
-                if (it != mpuTimeUs.end() && it->second >= gateInUs && it->second < gateOutUs)
-                    writeBytes(data, info.size);
+                const bool known = it != mpuTimeUs.end();
+                const bool inGate = known && it->second >= gateInUs && it->second < gateOutUs;
+                const bool pass = filter ? inGate : (!known || inGate);
+                if (pass)
+                    emitMmtp(data, info);
             } else {
-                writeBytes(data, info.size);
+                emitMmtp(data, info);
             }
 
             if (offset - lastProgressPos >= 4 * 1024 * 1024) {
