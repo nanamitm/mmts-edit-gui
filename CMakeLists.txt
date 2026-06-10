@@ -120,7 +120,8 @@ set(TS_SRC
 # Project source groups.
 set(MODEL_SRC
     src/model/MmtsMap.cpp  src/model/MmtsMap.h
-    src/model/MmtsEdit.cpp src/model/MmtsEdit.h)
+    src/model/MmtsEdit.cpp src/model/MmtsEdit.h
+    src/model/MmtsExporter.cpp src/model/MmtsExporter.h)
 set(DECODE_SRC
     src/decode/MmtsVideoDecoder.cpp    src/decode/MmtsVideoDecoder.h
     src/decode/MmtsDecodeController.cpp src/decode/MmtsDecodeController.h
@@ -228,6 +229,15 @@ target_link_libraries(mmts-mapbuild-test PRIVATE Qt6::Core)
 if(WIN32)
     target_link_libraries(mmts-mapbuild-test PRIVATE Winscard ws2_32)
 endif()
+
+# .mmts export (RAP-aligned copy) test (no ffmpeg).
+add_executable(mmts-export-test
+    tests/export_test.cpp
+    src/model/MmtsMap.cpp src/model/MmtsMap.h
+    src/model/MmtsEdit.cpp src/model/MmtsEdit.h
+    src/model/MmtsExporter.cpp src/model/MmtsExporter.h)
+target_include_directories(mmts-export-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/model")
+target_link_libraries(mmts-export-test PRIVATE Qt6::Core)
 
 # ---------------------------------------------------------------------------
 # Copy required ffmpeg runtime DLLs next to the executables.

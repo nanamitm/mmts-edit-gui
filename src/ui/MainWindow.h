@@ -38,6 +38,7 @@ private:
     void openMediaDialog();
     void saveEditDialog();
     void exportMediaDialog();
+    void exportMmtsDialog();
     void populateTables();
     void populateTrackTable();
     void populateMptTable();

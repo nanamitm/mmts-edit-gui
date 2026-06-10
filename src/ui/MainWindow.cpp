@@ -3,6 +3,7 @@
 #include "MmtsDecodeController.h"
 #include "HevcReencoder.h"
 #include "MmtsMapBuilder.h"
+#include "MmtsExporter.h"
 #include "MmtsTsExporter.h"
 #include "PreviewWidget.h"
 
@@ -58,6 +59,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(saveEditAction, &QAction::triggered, this, &MainWindow::saveEditDialog);
     auto* exportAction = new QAction("Export Edited TS...", this);
     connect(exportAction, &QAction::triggered, this, &MainWindow::exportMediaDialog);
+    auto* exportMmtsAction = new QAction("Export Edited MMTS...", this);
+    connect(exportMmtsAction, &QAction::triggered, this, &MainWindow::exportMmtsDialog);
     auto* fileMenu = menuBar()->addMenu("File");
     fileMenu->addAction(openMediaAction);
     fileMenu->addAction(openAction);
@@ -65,7 +68,8 @@ MainWindow::MainWindow(QWidget* parent)
     fileMenu->addSeparator();
     fileMenu->addAction(saveEditAction);
     fileMenu->addAction(exportAction);
-    fileMenu->setMinimumWidth(fontMetrics().horizontalAdvance("Export Edited TS...") + 48);
+    fileMenu->addAction(exportMmtsAction);
+    fileMenu->setMinimumWidth(fontMetrics().horizontalAdvance("Export Edited MMTS...") + 48);
 
     m_draftInLabel = new QLabel(formatMs(-1), this);
     m_draftInLabel->setMinimumWidth(110);
@@ -702,6 +706,99 @@ void MainWindow::exportMediaDialog()
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
 
     statusBar()->showMessage(QString("Exporting %1 segments to TS...").arg(plan.size()));
+    dlg->show();
+    thread->start();
+}
+
+void MainWindow::exportMmtsDialog()
+{
+    if (m_mediaPath.isEmpty() || m_map.path.isEmpty()) {
+        QMessageBox::information(this, "Export", "Open the media (.mmts) first.");
+        return;
+    }
+    if (m_segments.isEmpty()) {
+        QMessageBox::information(this, "Export", "Add at least one segment first.");
+        return;
+    }
+
+    const qint64 srcSize = QFileInfo(m_mediaPath).size();
+    const auto ranges = MmtsExporter::planRanges(m_map, m_segments, srcSize);
+    if (ranges.isEmpty()) {
+        QMessageBox::warning(this, "Export", "Could not map any segment to RAP byte ranges.");
+        return;
+    }
+
+    // The .mmts export is a lossless byte copy, so cuts snap to RAP (GOP)
+    // boundaries and multiple segments keep their original timestamps (the
+    // seams carry a PTS discontinuity). Confirm those trade-offs up front;
+    // the TS export is the frame-accurate / contiguous-timeline path.
+    {
+        QString note = QStringLiteral(
+            "MMTS export copies the source bytes losslessly.\n\n"
+            "- Cuts snap to RAP (GOP) boundaries, not exact frames.");
+        if (ranges.size() > 1) {
+            note += QStringLiteral(
+                "\n- Multiple segments keep their original timestamps, so each seam "
+                "has a PTS discontinuity (players resync at the next RAP).");
+        }
+        note += QStringLiteral("\n\nFor frame-accurate cuts on a continuous timeline, use \"Export Edited TS...\".");
+        QMessageBox box(QMessageBox::Information, "Export Edited MMTS", note,
+                        QMessageBox::Ok | QMessageBox::Cancel, this);
+        box.setDefaultButton(QMessageBox::Ok);
+        if (box.exec() != QMessageBox::Ok)
+            return;
+    }
+
+    const QFileInfo srcInfo(m_mediaPath);
+    const QString def = srcInfo.absolutePath() + "/" + srcInfo.completeBaseName() + "_edited.mmts";
+    const QString path = QFileDialog::getSaveFileName(this, "Export Edited MMTS", def, "MMTS (*.mmts)");
+    if (path.isEmpty())
+        return;
+    if (QFileInfo(path).canonicalFilePath() == srcInfo.canonicalFilePath()) {
+        QMessageBox::warning(this, "Export", "The output file must differ from the source.");
+        return;
+    }
+
+    auto* thread = new QThread(this);
+    auto* worker = new MmtsExportWorker;
+    worker->moveToThread(thread);
+    worker->configure(m_mediaPath, path, ranges);
+
+    auto* dlg = new QProgressDialog("Exporting edited MMTS (stream copy)...", "Cancel", 0, 100, this);
+    dlg->setWindowModality(Qt::WindowModal);
+    dlg->setMinimumDuration(0);
+    dlg->setAutoClose(false);
+    dlg->setAutoReset(false);
+
+    connect(thread, &QThread::started, worker, &MmtsExportWorker::run);
+    connect(worker, &MmtsExportWorker::progress, this, [dlg](qint64 done, qint64 total) {
+        // Ignore progress still queued after a cancel: setValue() on a cancelled
+        // QProgressDialog would pop it back up momentarily.
+        if (dlg->wasCanceled() || total <= 0)
+            return;
+        dlg->setValue(static_cast<int>(done * 100 / total));
+    });
+    // Direct connection: cancel() only flips an atomic, and the worker thread is
+    // busy (not running its event loop), so a queued call would not be delivered
+    // until it finished. Direct lets the GUI thread set it now.
+    connect(dlg, &QProgressDialog::canceled, worker, &MmtsExportWorker::cancel, Qt::DirectConnection);
+    connect(worker, &MmtsExportWorker::finished, this,
+            [this, dlg, thread, path](bool ok, const QString& err) {
+        dlg->close();
+        dlg->deleteLater();
+        if (ok) {
+            statusBar()->showMessage(QString("Exported %1").arg(path));
+        } else if (err != QLatin1String("Cancelled")) {
+            QMessageBox::warning(this, "Export Failed", err);
+        } else {
+            statusBar()->showMessage("Export cancelled");
+        }
+        thread->quit();
+    });
+    connect(thread, &QThread::finished, worker, &QObject::deleteLater);
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+
+    statusBar()->showMessage(QString("Exporting %1 segments to MMTS...").arg(ranges.size()));
     dlg->show();
     thread->start();
 }
