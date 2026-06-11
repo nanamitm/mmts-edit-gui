@@ -641,9 +641,20 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         qint64 headCopyStart = bS.mpuStartOffset; // copy region (lead-in spans up to here)
         qint64 headOffset = headStart;    // file offset attributed to the next emitVideo()
         constexpr qint64 kHeadWindowBytes = 12 * 1024 * 1024;
-        const auto pushHead = [&](HeadKind kind, const uint8_t* d, const PacketInfo& pi,
-                                  qint64 off, bool raw = false, bool lead = false) {
-            headBuf.push_back(HeadPkt{ std::vector<uint8_t>(d, d + pi.size), pi, off, kind, raw, lead });
+        // Tail window (OUT side): mirror of the head window. The segment's last
+        // video ends at copyEnd (a RAP), but the in-gate tail audio sits ~D
+        // bytes later (same mux lag), so the FilterOut region would otherwise
+        // play ~0.6 s of audio over a frozen last frame -- a brief hitch right
+        // before each seam. Buffer the last MB of copy video plus the FilterOut
+        // tail audio and pull the audio back across the copy video it belongs
+        // with.
+        std::vector<HeadPkt> tailBuf;
+        bool tailMerge = false;
+        qint64 tailStart = 0; // tail window opens this far before copyEnd
+        constexpr qint64 kTailWindowBytes = 6 * 1024 * 1024;
+        const auto pushMerge = [&](std::vector<HeadPkt>& buf, HeadKind kind, const uint8_t* d,
+                                   const PacketInfo& pi, qint64 off, bool raw = false, bool lead = false) {
+            buf.push_back(HeadPkt{ std::vector<uint8_t>(d, d + pi.size), pi, off, kind, raw, lead });
         };
         // Emit the buffered head window. Lead-in video spreads across the
         // FilterIn byte span [headStart, headCopyStart); copy video and "other"
@@ -691,9 +702,51 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
             }
             headBuf.clear();
         };
+        // Emit the buffered tail window: copy video keeps its byte order and
+        // the gated audio/subtitle (which sits past copyEnd in the source) is
+        // spread evenly across that video so it is pulled back into place.
+        // FilterOut "other" packets (past the last video) sort to the end.
+        const auto flushTailMerge = [&] {
+            if (!tailMerge)
+                return;
+            tailMerge = false;
+            if (tailBuf.empty())
+                return;
+            qint64 na = 0, maxVid = tailStart;
+            for (const auto& h : tailBuf) {
+                if (h.kind == HeadKind::Audio)
+                    ++na;
+                else if (h.kind == HeadKind::Video)
+                    maxVid = std::max(maxVid, h.offset);
+            }
+            const double span = std::max<double>(1.0, static_cast<double>(maxVid - tailStart));
+            qint64 ia = 0;
+            std::vector<std::pair<double, size_t>> order;
+            order.reserve(tailBuf.size());
+            for (size_t i = 0; i < tailBuf.size(); i++) {
+                double key;
+                if (tailBuf[i].kind == HeadKind::Audio)
+                    key = na > 0 ? (static_cast<double>(ia++) + 0.5) / static_cast<double>(na) : 0.0;
+                else
+                    key = static_cast<double>(tailBuf[i].offset - tailStart) / span;
+                order.emplace_back(key, i);
+            }
+            std::stable_sort(order.begin(), order.end(),
+                             [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (const auto& [k, i] : order) {
+                HeadPkt& h = tailBuf[i];
+                if (h.raw)
+                    writeBytes(h.bytes.data(), h.bytes.size());
+                else
+                    emitMmtp(h.bytes.data(), h.info);
+            }
+            tailBuf.clear();
+        };
         const auto emitVideo = [&](const uint8_t* d, const PacketInfo& pi) {
             if (headMerge)
-                pushHead(HeadKind::Video, d, pi, headOffset, /*raw=*/false, /*lead=*/markLead);
+                pushMerge(headBuf, HeadKind::Video, d, pi, headOffset, /*raw=*/false, /*lead=*/markLead);
+            else if (tailMerge)
+                pushMerge(tailBuf, HeadKind::Video, d, pi, headOffset);
             else
                 emitMmtp(d, pi);
         };
@@ -799,18 +852,38 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
             // reach FilterOut (small copy regions land here straight away).
             if (headMerge && region == Region::FilterOut)
                 flushHeadMerge();
+            // Open the tail window when the copy region nears copyEnd, so the
+            // FilterOut tail audio can be pulled back into the last copy video.
+            // (Only once the head window is done, to avoid overlapping buffers.)
+            if (!headMerge && !tailMerge && !copyEmpty && !audioPids.empty() &&
+                region == Region::Copy && offset >= bE.mpuStartOffset - kTailWindowBytes) {
+                tailMerge = true;
+                tailStart = offset;
+            }
             const bool filter = region != Region::Copy;
 
             if (!info.mmtp) {
                 // NTP / TCS / null packets pass everywhere; NTP carries absolute
-                // time (PCR source), so rebased segments shift it too.
-                std::vector<uint8_t> raw(data, data + info.size);
-                if (shiftUs != 0 && info.tlvType == 0x02)
-                    MmtTlv::Splice::shiftTlvNtpTimestamps(raw, shiftUs);
-                if (headMerge)
-                    pushHead(HeadKind::Other, raw.data(), info, offset, /*raw=*/true);
-                else
-                    writeBytes(raw.data(), raw.size());
+                // time (PCR source), so rebased segments shift it too. Null
+                // stuffing (0xFF) carries nothing, but in the boundary windows
+                // it dominates the byte stretch between the last copy video and
+                // the next segment's video -- it pads the seam's video gap out
+                // to ~1.3 MB, delaying the next video's delivery enough to
+                // freeze the picture. Drop it inside the merge windows so the
+                // video on both sides of the seam stays byte-adjacent.
+                if (info.tlvType == 0xFF && (headMerge || tailMerge)) {
+                    // dropped
+                } else {
+                    std::vector<uint8_t> raw(data, data + info.size);
+                    if (shiftUs != 0 && info.tlvType == 0x02)
+                        MmtTlv::Splice::shiftTlvNtpTimestamps(raw, shiftUs);
+                    if (headMerge)
+                        pushMerge(headBuf, HeadKind::Other, raw.data(), info, offset, /*raw=*/true);
+                    else if (tailMerge)
+                        pushMerge(tailBuf, HeadKind::Other, raw.data(), info, offset, /*raw=*/true);
+                    else
+                        writeBytes(raw.data(), raw.size());
+                }
             } else if (info.signaling) {
                 // Signaling is buffered per message in every region: MPT-bearing
                 // PA messages are replaced by a rewritten packet (synthesized MPU
@@ -856,13 +929,17 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                 }
                 if (pass) {
                     if (headMerge)
-                        pushHead(HeadKind::Audio, data, info, offset);
+                        pushMerge(headBuf, HeadKind::Audio, data, info, offset);
+                    else if (tailMerge)
+                        pushMerge(tailBuf, HeadKind::Audio, data, info, offset);
                     else
                         emitMmtp(data, info);
                 }
             } else {
                 if (headMerge)
-                    pushHead(HeadKind::Other, data, info, offset);
+                    pushMerge(headBuf, HeadKind::Other, data, info, offset);
+                else if (tailMerge)
+                    pushMerge(tailBuf, HeadKind::Other, data, info, offset);
                 else
                     emitMmtp(data, info);
             }
@@ -884,6 +961,7 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         // the byte budget or a FilterOut transition), then any buffered
         // signaling and the tail MPU.
         flushHeadMerge();
+        flushTailMerge();
         flushPending();
         if (!leadEmitted)
             emitPackets(leadPackets); // copy region empty and never entered
