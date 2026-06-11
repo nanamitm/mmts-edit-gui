@@ -8,6 +8,7 @@
 #include <QFile>
 #include <algorithm>
 #include <climits>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -208,6 +209,75 @@ bool extractMptFromMessage(const std::vector<uint8_t>& msg, std::vector<uint8_t>
 }
 
 // ---------------------------------------------------------------------------
+// Subtitle (TTML) clock rebase.
+//
+// Caption display times are absolute program clocks "HH:MM:SS.mmm" embedded in
+// the TTML payload, independent of the MMT/NTP timeline the export rebases.
+// After segments are reordered/shifted these clocks no longer line up with the
+// rebased presentation, so players that key captions off the TTML clock place
+// them at the wrong (often negative) time and they never appear. Shifting every
+// begin/end clock by the segment's rebase amount restores alignment. The
+// HH:MM:SS.mmm form is fixed width, so this rewrites in place -- no MMTP / MPU /
+// MFU header touches needed.
+// ---------------------------------------------------------------------------
+bool readTtmlClock(const uint8_t* p, qint64& outMs)
+{
+    auto dig = [&](int i) { return p[i] >= '0' && p[i] <= '9'; };
+    if (!(dig(0) && dig(1) && p[2] == ':' && dig(3) && dig(4) && p[5] == ':' &&
+          dig(6) && dig(7) && p[8] == '.' && dig(9) && dig(10) && dig(11)))
+        return false;
+    const qint64 hh = (p[0] - '0') * 10 + (p[1] - '0');
+    const qint64 mm = (p[3] - '0') * 10 + (p[4] - '0');
+    const qint64 ss = (p[6] - '0') * 10 + (p[7] - '0');
+    const qint64 ms = (p[9] - '0') * 100 + (p[10] - '0') * 10 + (p[11] - '0');
+    outMs = ((hh * 60 + mm) * 60 + ss) * 1000 + ms;
+    return true;
+}
+
+void writeTtmlClock(uint8_t* p, qint64 ms)
+{
+    if (ms < 0)
+        ms = 0;
+    qint64 hh = ms / 3600000; ms %= 3600000;
+    qint64 mm = ms / 60000;   ms %= 60000;
+    qint64 ss = ms / 1000;    qint64 mmm = ms % 1000;
+    hh %= 100; // HH:MM:SS.mmm is fixed width; clamp hours to two digits
+    p[0] = static_cast<uint8_t>('0' + hh / 10);  p[1] = static_cast<uint8_t>('0' + hh % 10);
+    p[3] = static_cast<uint8_t>('0' + mm / 10);  p[4] = static_cast<uint8_t>('0' + mm % 10);
+    p[6] = static_cast<uint8_t>('0' + ss / 10);  p[7] = static_cast<uint8_t>('0' + ss % 10);
+    p[9] = static_cast<uint8_t>('0' + mmm / 100);
+    p[10] = static_cast<uint8_t>('0' + (mmm / 10) % 10);
+    p[11] = static_cast<uint8_t>('0' + mmm % 10);
+}
+
+// Shift every begin="HH:MM:SS.mmm" / end="HH:MM:SS.mmm" clock in a subtitle
+// packet by shiftMs (in place). Returns how many clocks were shifted.
+int shiftSubtitleTtmlTimes(std::vector<uint8_t>& pkt, qint64 shiftMs)
+{
+    if (shiftMs == 0 || pkt.size() < 20)
+        return 0;
+    int shifted = 0;
+    static const char* const keys[] = { "begin=\"", "end=\"" };
+    for (const char* key : keys) {
+        const size_t klen = std::strlen(key);
+        for (size_t i = 0; i + klen + 13 <= pkt.size();) {
+            if (std::memcmp(pkt.data() + i, key, klen) == 0) {
+                uint8_t* v = pkt.data() + i + klen;
+                qint64 ms = 0;
+                if (v[12] == '"' && readTtmlClock(v, ms)) {
+                    writeTtmlClock(v, ms + shiftMs);
+                    ++shifted;
+                    i += klen + 12;
+                    continue;
+                }
+            }
+            ++i;
+        }
+    }
+    return shifted;
+}
+
+// ---------------------------------------------------------------------------
 // MPU timing for the re-encoded AUs (single synthesized MPU).
 // ---------------------------------------------------------------------------
 MmtTlv::Splice::MpuTiming buildMpuTiming(const std::vector<HevcReencoder::Au>& aus,
@@ -343,6 +413,7 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
     quint16 videoPid = 0;
     std::vector<quint16> gatedPids; // audio + subtitle: time-gated to [IN, OUT)
     std::vector<quint16> audioPids;
+    std::vector<quint16> subtitlePids;
     for (const auto& t : map.tracks) {
         if (t.type == MmtsTrack::Type::Video && videoPid == 0)
             videoPid = t.packetId;
@@ -350,6 +421,8 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
             gatedPids.push_back(t.packetId);
         if (t.type == MmtsTrack::Type::Audio)
             audioPids.push_back(t.packetId);
+        if (t.type == MmtsTrack::Type::Subtitle)
+            subtitlePids.push_back(t.packetId);
     }
     if (videoPid == 0) {
         if (errorMessage) *errorMessage = QStringLiteral("The map has no video track.");
@@ -357,6 +430,9 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
     }
     const auto isGatedPid = [&](quint16 pid) {
         return std::find(gatedPids.begin(), gatedPids.end(), pid) != gatedPids.end();
+    };
+    const auto isSubtitlePid = [&](quint16 pid) {
+        return std::find(subtitlePids.begin(), subtitlePids.end(), pid) != subtitlePids.end();
     };
 
     QVector<MmtsPoint> raps = map.rapPoints;
@@ -928,12 +1004,22 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                             (long long)(gateInUs / 1000), pass ? 1 : 0, (unsigned long long)offset);
                 }
                 if (pass) {
+                    // Rebase TTML caption clocks for shifted segments so they
+                    // line up with the rebased presentation (fixed-width edit,
+                    // size unchanged). mod stays alive for the emit/buffer copy.
+                    const uint8_t* outData = data;
+                    std::vector<uint8_t> mod;
+                    if (shiftUs != 0 && isSubtitlePid(info.packetId)) {
+                        mod.assign(data, data + info.size);
+                        shiftSubtitleTtmlTimes(mod, shiftUs / 1000);
+                        outData = mod.data();
+                    }
                     if (headMerge)
-                        pushMerge(headBuf, HeadKind::Audio, data, info, offset);
+                        pushMerge(headBuf, HeadKind::Audio, outData, info, offset);
                     else if (tailMerge)
-                        pushMerge(tailBuf, HeadKind::Audio, data, info, offset);
+                        pushMerge(tailBuf, HeadKind::Audio, outData, info, offset);
                     else
-                        emitMmtp(data, info);
+                        emitMmtp(outData, info);
                 }
             } else {
                 if (headMerge)
