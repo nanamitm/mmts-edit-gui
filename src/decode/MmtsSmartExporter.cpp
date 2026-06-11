@@ -604,25 +604,96 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                 writeBytes(pkt.data(), pkt.size());
         };
 
-        // Broadcast muxes carry audio ~0.5-1 s behind the video at the same
-        // byte position, so cutting both at IN leaves the segment head with a
-        // video-only stretch that can starve players of audio (clock stalls,
-        // sample allocators run dry). Hold the segment's video packets back
-        // until the first in-gate audio packet has been emitted, then release
-        // them: contents are unchanged, only the interleave is normalized.
-        std::vector<std::pair<std::vector<uint8_t>, PacketInfo>> heldVideo;
-        bool videoHold = !audioPids.empty();
-        const auto releaseHeldVideo = [&] {
-            if (!videoHold)
+        // At each segment head the copy region's video leads its in-gate audio
+        // by ~0.5-1 s in byte order (the broadcast mux interleave) and the
+        // pre-IN audio is gated out, so the head would otherwise be one long
+        // video-only run: players starve for audio, the clock stalls and the
+        // framerate collapses to a few fps for a couple of seconds. Instead we
+        // buffer a window at the head and emit it with the byte-delayed audio
+        // pulled forward and spread evenly across the head video. Video keeps
+        // its byte position (no late frames); the in-gate audio is delivered
+        // early (harmlessly buffered by the player); the head gets a natural
+        // A/V interleave. After the window normal streaming resumes -- the
+        // steady-state "video leads audio by ~D" interleave is exactly what the
+        // mux carries everywhere else and what players expect.
+        // The window spans the whole segment head: the FilterIn region (video
+        // dropped, only in-gate audio kept) plus the synthesized lead-in GOP
+        // plus the first ~MB of the copy region. Without this the seam carries
+        // a ~2 MB video-only-absent stretch (FilterIn audio + preroll) before
+        // the copy video starts, so mid-playback the video freezes for ~0.6 s
+        // until it arrives. We distribute the lead-in video across the FilterIn
+        // byte span and spread the byte-delayed in-gate audio across the whole
+        // window: video data is then present continuously across the seam and
+        // audio is delivered slightly early (harmlessly buffered).
+        enum class HeadKind { Video, Audio, Other };
+        struct HeadPkt {
+            std::vector<uint8_t> bytes;
+            PacketInfo info;
+            qint64 offset = 0;
+            HeadKind kind = HeadKind::Other;
+            bool raw = false;  // write verbatim (e.g. already-shifted NTP)
+            bool lead = false; // synthesized lead-in video (no real byte offset)
+        };
+        std::vector<HeadPkt> headBuf;
+        bool headMerge = !audioPids.empty();
+        bool markLead = false;            // tag video emitted as lead-in
+        qint64 headStart = r.scanStart;   // window opens at the FilterIn start
+        qint64 headCopyStart = bS.mpuStartOffset; // copy region (lead-in spans up to here)
+        qint64 headOffset = headStart;    // file offset attributed to the next emitVideo()
+        constexpr qint64 kHeadWindowBytes = 12 * 1024 * 1024;
+        const auto pushHead = [&](HeadKind kind, const uint8_t* d, const PacketInfo& pi,
+                                  qint64 off, bool raw = false, bool lead = false) {
+            headBuf.push_back(HeadPkt{ std::vector<uint8_t>(d, d + pi.size), pi, off, kind, raw, lead });
+        };
+        // Emit the buffered head window. Lead-in video spreads across the
+        // FilterIn byte span [headStart, headCopyStart); copy video and "other"
+        // packets keep their natural byte order; the gated audio/subtitle
+        // packets (which sit ~D bytes later in the source) spread evenly across
+        // the whole window. Renumbering happens here, in final file order.
+        const auto flushHeadMerge = [&] {
+            if (!headMerge)
                 return;
-            videoHold = false;
-            for (const auto& [bytes, pi] : heldVideo)
-                emitMmtp(bytes.data(), pi);
-            heldVideo.clear();
+            headMerge = false;
+            if (headBuf.empty())
+                return;
+            qint64 na = 0, nLead = 0, maxOff = headStart;
+            for (const auto& h : headBuf) {
+                if (h.kind == HeadKind::Audio)
+                    ++na;
+                else if (h.lead)
+                    ++nLead;
+                else
+                    maxOff = std::max(maxOff, h.offset);
+            }
+            const double span = std::max<double>(1.0, static_cast<double>(maxOff - headStart));
+            const double leadFrac = std::clamp(static_cast<double>(headCopyStart - headStart) / span, 0.0, 1.0);
+            qint64 ia = 0, il = 0;
+            std::vector<std::pair<double, size_t>> order;
+            order.reserve(headBuf.size());
+            for (size_t i = 0; i < headBuf.size(); i++) {
+                double key;
+                if (headBuf[i].kind == HeadKind::Audio)
+                    key = na > 0 ? (static_cast<double>(ia++) + 0.5) / static_cast<double>(na) : 0.0;
+                else if (headBuf[i].lead)
+                    key = nLead > 0 ? ((static_cast<double>(il++) + 0.5) / static_cast<double>(nLead)) * leadFrac : 0.0;
+                else
+                    key = static_cast<double>(headBuf[i].offset - headStart) / span;
+                order.emplace_back(key, i);
+            }
+            std::stable_sort(order.begin(), order.end(),
+                             [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (const auto& [k, i] : order) {
+                HeadPkt& h = headBuf[i];
+                if (h.raw)
+                    writeBytes(h.bytes.data(), h.bytes.size());
+                else
+                    emitMmtp(h.bytes.data(), h.info);
+            }
+            headBuf.clear();
         };
         const auto emitVideo = [&](const uint8_t* d, const PacketInfo& pi) {
-            if (videoHold)
-                heldVideo.emplace_back(std::vector<uint8_t>(d, d + pi.size), pi);
+            if (headMerge)
+                pushHead(HeadKind::Video, d, pi, headOffset, /*raw=*/false, /*lead=*/markLead);
             else
                 emitMmtp(d, pi);
         };
@@ -652,7 +723,12 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         const auto enterCopy = [&] {
             flushPending();
             if (!leadEmitted) {
+                // Lead-in video: tagged so the merge spreads it across the
+                // FilterIn byte span (filling the seam's video-absent stretch).
+                markLead = true;
+                headOffset = headCopyStart;
                 emitPackets(leadPackets);
+                markLead = false;
                 leadEmitted = true;
             }
         };
@@ -719,18 +795,22 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
             } else if (region == Region::Copy && offset >= bE.mpuStartOffset) {
                 region = Region::FilterOut;
             }
+            // The head window spans FilterIn + the copy head; flush it once we
+            // reach FilterOut (small copy regions land here straight away).
+            if (headMerge && region == Region::FilterOut)
+                flushHeadMerge();
             const bool filter = region != Region::Copy;
 
             if (!info.mmtp) {
                 // NTP / TCS / null packets pass everywhere; NTP carries absolute
                 // time (PCR source), so rebased segments shift it too.
-                if (shiftUs != 0 && info.tlvType == 0x02) {
-                    std::vector<uint8_t> ntp(data, data + info.size);
-                    MmtTlv::Splice::shiftTlvNtpTimestamps(ntp, shiftUs);
-                    writeBytes(ntp.data(), ntp.size());
-                } else {
-                    writeBytes(data, info.size);
-                }
+                std::vector<uint8_t> raw(data, data + info.size);
+                if (shiftUs != 0 && info.tlvType == 0x02)
+                    MmtTlv::Splice::shiftTlvNtpTimestamps(raw, shiftUs);
+                if (headMerge)
+                    pushHead(HeadKind::Other, raw.data(), info, offset, /*raw=*/true);
+                else
+                    writeBytes(raw.data(), raw.size());
             } else if (info.signaling) {
                 // Signaling is buffered per message in every region: MPT-bearing
                 // PA messages are replaced by a rewritten packet (synthesized MPU
@@ -753,8 +833,10 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                     st.pending.clear();
                 }
             } else if (info.packetId == videoPid) {
-                if (!filter)
+                if (!filter) {
+                    headOffset = offset;
                     emitVideo(data, info);
+                }
                 // dropped in boundary regions (replaced by the synthesized MPUs)
             } else if (info.mpu && isGatedPid(info.packetId)) {
                 // Gate audio/subtitle MPUs to [IN, OUT): in the boundary
@@ -773,14 +855,20 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                             (long long)(gateInUs / 1000), pass ? 1 : 0, (unsigned long long)offset);
                 }
                 if (pass) {
-                    emitMmtp(data, info);
-                    if (videoHold &&
-                        std::find(audioPids.begin(), audioPids.end(), info.packetId) != audioPids.end())
-                        releaseHeldVideo(); // audio is flowing: restore normal order
+                    if (headMerge)
+                        pushHead(HeadKind::Audio, data, info, offset);
+                    else
+                        emitMmtp(data, info);
                 }
             } else {
-                emitMmtp(data, info);
+                if (headMerge)
+                    pushHead(HeadKind::Other, data, info, offset);
+                else
+                    emitMmtp(data, info);
             }
+
+            if (headMerge && offset - headStart >= kHeadWindowBytes)
+                flushHeadMerge(); // window full: rest of the copy flows naturally
 
             if (offset - lastProgressPos >= 4 * 1024 * 1024) {
                 doneBytes += offset - lastProgressPos;
@@ -792,13 +880,14 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         if (corrupt)
             return fail(QString("Segment #%1: source does not parse as TLV near %2.").arg(segmentNo).arg(offset));
 
-        // End of segment: flush any buffered signaling, then the tail MPU and
-        // any video still held back (e.g. a segment with no in-gate audio).
+        // End of segment: flush the head window (short copy regions never hit
+        // the byte budget or a FilterOut transition), then any buffered
+        // signaling and the tail MPU.
+        flushHeadMerge();
         flushPending();
         if (!leadEmitted)
             emitPackets(leadPackets); // copy region empty and never entered
         emitPackets(tailPackets);
-        releaseHeldVideo();
         desiredStartUs += (effOutMs - effInMs) * 1000;
 
         doneBytes += seg.endByte - lastProgressPos;
