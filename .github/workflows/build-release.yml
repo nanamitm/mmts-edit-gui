@@ -213,8 +213,9 @@ jobs:
             --plugin qt \
             --output appimage
 
-          mv ./*.AppImage "mmts-edit-gui-$VERSION-linux-x86_64.AppImage"
-          echo "PACKAGE=mmts-edit-gui-$VERSION-linux-x86_64.AppImage" >> "$GITHUB_ENV"
+          PACKAGE="mmts-edit-gui-$VERSION-linux-x86_64.AppImage"
+          mv ./MMTS_Edit_GUI-x86_64.AppImage "./$PACKAGE"
+          echo "PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
