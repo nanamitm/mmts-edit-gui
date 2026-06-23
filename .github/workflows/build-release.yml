@@ -67,7 +67,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
             -DDANTTO4K_DIR="$env:GITHUB_WORKSPACE\dantto4k" `
             -DFFMPEG_DIR="$env:GITHUB_WORKSPACE\thirdparty\ffmpeg" `
-            -DMMTS_ENABLE_TSDUCK=ON
+            -DMMTS_ENABLE_TSDUCK=OFF
 
       - name: Build
         shell: pwsh

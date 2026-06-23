@@ -615,7 +615,7 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         // the MPU itself arrives), refinable downward until the pid's first
         // emission. Other MPU pids (data carousels) keep their source numbers:
         // their sequence numbers identify carousel items and cycle by design.
-        std::map<quint16, qint64> mpuOff;
+        std::map<quint16, int64_t> mpuOff;
         std::map<quint16, bool> mpuOffFrozen;
         {
             const quint64 firstSrcVideo = leadIn.empty() ? bS.mpuSeq : bS.mpuSeq - 1;
@@ -874,8 +874,8 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                 if (e.packetId != videoPid && isGatedPid(e.packetId) &&
                     !mpuOffFrozen[e.packetId] && lastOutMpu.count(e.packetId) &&
                     e.presentationTimeUs >= gateInUs && e.presentationTimeUs < gateOutUs) {
-                    const qint64 cand =
-                        (lastOutMpu[e.packetId] + 1) - static_cast<qint64>(e.mpuSequenceNumber);
+                    const int64_t cand =
+                        (lastOutMpu[e.packetId] + 1) - static_cast<int64_t>(e.mpuSequenceNumber);
                     const auto it = mpuOff.find(e.packetId);
                     if (it == mpuOff.end())
                         mpuOff[e.packetId] = cand;
