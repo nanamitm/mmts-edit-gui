@@ -114,7 +114,7 @@ bool MmtsMapReader::load(const QString& path, MmtsMap& out, QString* errorMessag
     map.path = path;
 
     bool ok = false;
-    if (data.startsWith("MMTSMAP2"))
+    if (data.startsWith("MMTSMAP2") || data.startsWith("MMTSMAP3"))
         ok = loadBinary(data, map, errorMessage);
     else
         ok = loadText(data, map, errorMessage);
@@ -137,6 +137,9 @@ QString MmtsMapReader::trackTypeName(MmtsTrack::Type type)
 
 bool MmtsMapReader::loadBinary(const QByteArray& data, MmtsMap& out, QString* errorMessage)
 {
+    const bool isV3 = data.startsWith("MMTSMAP3");
+    const quint32 expectedVersion = isV3 ? 3 : 2;
+
     qsizetype pos = 8;
     quint32 version = 0;
     quint32 flags = 0;
@@ -151,20 +154,22 @@ bool MmtsMapReader::loadBinary(const QByteArray& data, MmtsMap& out, QString* er
         !readPod(data, pos, trackCount) || !readPod(data, pos, mptCount) ||
         !readPod(data, pos, rapCount) || !readPod(data, pos, seekCount)) {
         if (errorMessage)
-            *errorMessage = "Truncated MMTSMAP2 header";
+            *errorMessage = "Truncated MMTSMAP header";
         return false;
     }
-    if (version != 2 || flags != 0) {
+    if (version != expectedVersion || flags != 0) {
         if (errorMessage)
-            *errorMessage = "Unsupported MMTSMAP2 version or flags";
+            *errorMessage = "Unsupported MMTSMAP version or flags";
         return false;
     }
 
-    out.format = "MMTSMAP2";
+    out.format = isV3 ? "MMTSMAP3" : "MMTSMAP2";
     out.tracks.reserve(static_cast<int>(trackCount));
     for (quint32 i = 0; i < trackCount; ++i) {
         quint8 type = 0;
         quint8 trackFlags = 0;
+        quint8 audioMode = 0;
+        quint8 channels = 0;
         quint16 reserved = 0;
         qint32 streamIndex = -1;
         quint16 packetId = 0;
@@ -172,12 +177,27 @@ bool MmtsMapReader::loadBinary(const QByteArray& data, MmtsMap& out, QString* er
         quint32 samplingRate = 0;
         quint32 reserved2 = 0;
 
-        if (!readPod(data, pos, type) || !readPod(data, pos, trackFlags) ||
-            !readPod(data, pos, reserved) || !readPod(data, pos, streamIndex) ||
-            !readPod(data, pos, packetId) || !readPod(data, pos, componentTag) ||
-            !readPod(data, pos, samplingRate) || !readPod(data, pos, reserved2)) {
+        if (!readPod(data, pos, type) || !readPod(data, pos, trackFlags)) {
             if (errorMessage)
-                *errorMessage = "Truncated MMTSMAP2 track table";
+                *errorMessage = "Truncated MMTSMAP track table";
+            return false;
+        }
+        if (isV3) {
+            if (!readPod(data, pos, audioMode) || !readPod(data, pos, channels)) {
+                if (errorMessage)
+                    *errorMessage = "Truncated MMTSMAP track table";
+                return false;
+            }
+        } else if (!readPod(data, pos, reserved)) {
+            if (errorMessage)
+                *errorMessage = "Truncated MMTSMAP track table";
+            return false;
+        }
+        if (!readPod(data, pos, streamIndex) || !readPod(data, pos, packetId) ||
+            !readPod(data, pos, componentTag) || !readPod(data, pos, samplingRate) ||
+            !readPod(data, pos, reserved2)) {
+            if (errorMessage)
+                *errorMessage = "Truncated MMTSMAP track table";
             return false;
         }
 
@@ -188,6 +208,8 @@ bool MmtsMapReader::loadBinary(const QByteArray& data, MmtsMap& out, QString* er
         track.componentTag = componentTag;
         track.samplingRate = samplingRate;
         track.latm = (trackFlags & 1) != 0;
+        track.audioMode = audioMode;
+        track.channels = channels;
         out.tracks.push_back(track);
     }
 
@@ -198,7 +220,7 @@ bool MmtsMapReader::loadBinary(const QByteArray& data, MmtsMap& out, QString* er
         if (!readPod(data, pos, change.timeMs) || !readPod(data, pos, change.offset) ||
             !readPod(data, pos, mptTrackCount)) {
             if (errorMessage)
-                *errorMessage = "Truncated MMTSMAP2 MPT table";
+                *errorMessage = "Truncated MMTSMAP MPT table";
             return false;
         }
         change.trackIndices.reserve(static_cast<int>(mptTrackCount));
@@ -206,7 +228,7 @@ bool MmtsMapReader::loadBinary(const QByteArray& data, MmtsMap& out, QString* er
             quint32 index = 0;
             if (!readPod(data, pos, index)) {
                 if (errorMessage)
-                    *errorMessage = "Truncated MMTSMAP2 MPT track list";
+                    *errorMessage = "Truncated MMTSMAP MPT track list";
                 return false;
             }
             if (index < static_cast<quint32>(out.tracks.size()))
@@ -227,7 +249,7 @@ bool MmtsMapReader::loadBinary(const QByteArray& data, MmtsMap& out, QString* er
     };
     if (!readPoint(out.rapPoints, rapCount) || !readPoint(out.seekPoints, seekCount)) {
         if (errorMessage)
-            *errorMessage = "Truncated MMTSMAP2 point table";
+            *errorMessage = "Truncated MMTSMAP point table";
         return false;
     }
 
@@ -267,6 +289,8 @@ bool MmtsMapReader::loadText(const QByteArray& data, MmtsMap& out, QString* erro
             track.componentTag = values.value("componentTag").toInt();
             track.samplingRate = values.value("rate").toUInt();
             track.latm = values.value("latm").toInt() != 0;
+            track.audioMode = static_cast<uint8_t>(values.value("audioMode").toUInt());
+            track.channels = static_cast<uint8_t>(values.value("channels").toUInt());
             appendUniqueTrack(out.tracks, track);
         } else if (line.startsWith("mpt ")) {
             const auto values = parseKeyValues(line.mid(4));

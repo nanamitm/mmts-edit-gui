@@ -19,6 +19,8 @@ struct MmtsTrack {
     int componentTag = -1;
     uint32_t samplingRate = 0;
     bool latm = false;
+    uint8_t audioMode = 0;
+    uint8_t channels = 0;
 };
 
 struct MmtsPoint {
