@@ -14,6 +14,7 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 
 namespace {
@@ -88,7 +89,7 @@ bool HevcReencoder::reencode(const QString& mmtsPath, const MmtsMap& map,
     out.clear();
     av_log_set_level(AV_LOG_FATAL);
 
-    std::ifstream ifs(mmtsPath.toStdWString(), std::ios::binary);
+    std::ifstream ifs(std::filesystem::path(mmtsPath.toStdWString()), std::ios::binary);
     if (!ifs.is_open()) {
         if (errorMessage) *errorMessage = QStringLiteral("cannot open %1").arg(mmtsPath);
         return false;

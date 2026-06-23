@@ -8,6 +8,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
+option(MMTS_ENABLE_TSDUCK "Enable MPEG-2 TS export support via TSDuck" ${WIN32})
 
 # ---------------------------------------------------------------------------
 # External projects
@@ -77,47 +78,53 @@ set(EXT_INCLUDE
 # tsduck (MMT -> MPEG-2 TS remux, used by the .ts exporter). Reuses the static
 # libs already built under dantto4k/thirdparty/tsduck.
 # ---------------------------------------------------------------------------
-set(TSDUCK_ROOT "${DANTTO4K_DIR}/thirdparty/tsduck")
-if(NOT EXISTS "${TSDUCK_ROOT}/bin/include/tsduck.h")
-    message(FATAL_ERROR "tsduck not found/built at ${TSDUCK_ROOT} (need bin/include + bin/<Config>-x64 libs).")
-endif()
-file(GLOB_RECURSE _ts_hdrs "${TSDUCK_ROOT}/src/libtscore/*.h" "${TSDUCK_ROOT}/src/libtsduck/*.h")
-set(TSDUCK_INCLUDE "")
-foreach(_h ${_ts_hdrs})
-    if(NOT _h MATCHES "/(unix|linux|mac|bsd|private|__pycache__)/")
-        get_filename_component(_d "${_h}" DIRECTORY)
-        list(APPEND TSDUCK_INCLUDE "${_d}")
+if(MMTS_ENABLE_TSDUCK)
+    set(TSDUCK_ROOT "${DANTTO4K_DIR}/thirdparty/tsduck")
+    if(NOT EXISTS "${TSDUCK_ROOT}/bin/include/tsduck.h")
+        message(FATAL_ERROR "tsduck not found/built at ${TSDUCK_ROOT} (need bin/include + bin/<Config>-x64 libs).")
     endif()
-endforeach()
-list(REMOVE_DUPLICATES TSDUCK_INCLUDE)
-list(APPEND TSDUCK_INCLUDE "${TSDUCK_ROOT}/bin/include")
-set(TSDUCK_LIBDIR "${TSDUCK_ROOT}/bin/$<IF:$<CONFIG:Debug>,Debug,Release>-x64")
+    file(GLOB_RECURSE _ts_hdrs "${TSDUCK_ROOT}/src/libtscore/*.h" "${TSDUCK_ROOT}/src/libtsduck/*.h")
+    set(TSDUCK_INCLUDE "")
+    foreach(_h ${_ts_hdrs})
+        if(NOT _h MATCHES "/(unix|linux|mac|bsd|private|__pycache__)/")
+            get_filename_component(_d "${_h}" DIRECTORY)
+            list(APPEND TSDUCK_INCLUDE "${_d}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES TSDUCK_INCLUDE)
+    list(APPEND TSDUCK_INCLUDE "${TSDUCK_ROOT}/bin/include")
+    set(TSDUCK_LIBDIR "${TSDUCK_ROOT}/bin/$<IF:$<CONFIG:Debug>,Debug,Release>-x64")
 
-# dantto4k's TS remuxer (depends on tsduck) -- relaxed warnings like the rest.
-set(REMUX_SRC "${DANTTO4K_DIR}/src/remuxerHandler.cpp")
-if(MSVC)
-    set_source_files_properties(${REMUX_SRC} PROPERTIES
-        COMPILE_OPTIONS "/permissive;/wd4996;/wd4244;/wd4267;/wd4018;/wd4800;/wd4819")
-endif()
-
-# Adds tsduck include/defs/libs (with the required /WHOLEARCHIVE) to a target.
-function(enable_tsduck tgt)
-    target_compile_definitions(${tgt} PRIVATE TSDUCK_STATIC_LIBRARY TSCORE_STATIC_LIBRARY)
-    target_include_directories(${tgt} PRIVATE ${TSDUCK_INCLUDE})
-    target_link_directories(${tgt} PRIVATE "${TSDUCK_LIBDIR}")
-    target_link_libraries(${tgt} PRIVATE tsducklib tscorelib)
-    target_link_options(${tgt} PRIVATE "/WHOLEARCHIVE:tsducklib.lib" "/WHOLEARCHIVE:tscorelib.lib")
+    # dantto4k's TS remuxer (depends on tsduck) -- relaxed warnings like the rest.
+    set(REMUX_SRC "${DANTTO4K_DIR}/src/remuxerHandler.cpp")
     if(MSVC)
-        target_compile_options(${tgt} PRIVATE /wd4819 /Wv:17)
+        set_source_files_properties(${REMUX_SRC} PROPERTIES
+            COMPILE_OPTIONS "/permissive;/wd4996;/wd4244;/wd4267;/wd4018;/wd4800;/wd4819")
     endif()
-endfunction()
 
-# TS exporter sources (need tsduck).
-set(TS_SRC
-    src/decode/MmtsTsExporter.cpp src/decode/MmtsTsExporter.h
+    # Adds tsduck include/defs/libs (with the required /WHOLEARCHIVE) to a target.
+    function(enable_tsduck tgt)
+        target_compile_definitions(${tgt} PRIVATE TSDUCK_STATIC_LIBRARY TSCORE_STATIC_LIBRARY)
+        target_include_directories(${tgt} PRIVATE ${TSDUCK_INCLUDE})
+        target_link_directories(${tgt} PRIVATE "${TSDUCK_LIBDIR}")
+        target_link_libraries(${tgt} PRIVATE tsducklib tscorelib)
+        target_link_options(${tgt} PRIVATE "/WHOLEARCHIVE:tsducklib.lib" "/WHOLEARCHIVE:tscorelib.lib")
+        if(MSVC)
+            target_compile_options(${tgt} PRIVATE /wd4819 /Wv:17)
+        endif()
+    endfunction()
+endif()
+
+set(SMART_RENDER_SRC
     src/decode/MmtsSmartExporter.cpp src/decode/MmtsSmartExporter.h
-    src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
-    ${REMUX_SRC})
+    src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h)
+
+set(TS_SRC "")
+if(MMTS_ENABLE_TSDUCK)
+    list(APPEND TS_SRC
+        src/decode/MmtsTsExporter.cpp src/decode/MmtsTsExporter.h
+        ${REMUX_SRC})
+endif()
 
 # Project source groups.
 set(MODEL_SRC
@@ -134,23 +141,35 @@ set(UI_SRC
     src/ui/PreviewWidget.cpp src/ui/PreviewWidget.h
     src/ui/TimelineWidget.cpp src/ui/TimelineWidget.h)
 
+function(enable_windows_runtime tgt)
+    if(WIN32)
+        target_compile_definitions(${tgt} PRIVATE UNICODE _UNICODE)
+        target_link_libraries(${tgt} PRIVATE Winscard ws2_32)
+    endif()
+endfunction()
+
 # ---------------------------------------------------------------------------
 # Main application
 # ---------------------------------------------------------------------------
-add_executable(mmts-edit-gui WIN32
+set(MMTS_EDIT_GUI_SOURCES
     src/main.cpp
-    resources/app.rc
     resources/icons.qrc
-    ${MODEL_SRC} ${DECODE_SRC} ${UI_SRC} ${TS_SRC}
+    ${MODEL_SRC} ${DECODE_SRC} ${UI_SRC} ${SMART_RENDER_SRC} ${TS_SRC}
     ${DANTTO4K_SRC_FILES})
-target_compile_definitions(mmts-edit-gui PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
+if(WIN32)
+    list(APPEND MMTS_EDIT_GUI_SOURCES resources/app.rc)
+    add_executable(mmts-edit-gui WIN32 ${MMTS_EDIT_GUI_SOURCES})
+else()
+    add_executable(mmts-edit-gui ${MMTS_EDIT_GUI_SOURCES})
+endif()
+target_compile_definitions(mmts-edit-gui PRIVATE MMTS_ENABLE_TSDUCK=$<BOOL:${MMTS_ENABLE_TSDUCK}>)
 target_include_directories(mmts-edit-gui PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_directories(mmts-edit-gui PRIVATE "${FFMPEG_DIR}/lib")
 target_link_libraries(mmts-edit-gui PRIVATE Qt6::Widgets avcodec avutil swscale)
-if(WIN32)
-    target_link_libraries(mmts-edit-gui PRIVATE Winscard ws2_32)
+enable_windows_runtime(mmts-edit-gui)
+if(MMTS_ENABLE_TSDUCK)
+    enable_tsduck(mmts-edit-gui)
 endif()
-enable_tsduck(mmts-edit-gui)
 
 # ---------------------------------------------------------------------------
 # Headless tests
@@ -161,13 +180,10 @@ add_executable(mmts-decode-test
     src/model/MmtsMap.cpp src/model/MmtsMap.h
     ${DECODE_SRC}
     ${DANTTO4K_SRC_FILES})
-target_compile_definitions(mmts-decode-test PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
 target_include_directories(mmts-decode-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_directories(mmts-decode-test PRIVATE "${FFMPEG_DIR}/lib")
 target_link_libraries(mmts-decode-test PRIVATE Qt6::Gui avcodec avutil swscale)
-if(WIN32)
-    target_link_libraries(mmts-decode-test PRIVATE Winscard ws2_32)
-endif()
+enable_windows_runtime(mmts-decode-test)
 
 # Threaded controller + cache smoke test.
 add_executable(mmts-controller-test
@@ -175,13 +191,10 @@ add_executable(mmts-controller-test
     src/model/MmtsMap.cpp src/model/MmtsMap.h
     ${DECODE_SRC}
     ${DANTTO4K_SRC_FILES})
-target_compile_definitions(mmts-controller-test PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
 target_include_directories(mmts-controller-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_directories(mmts-controller-test PRIVATE "${FFMPEG_DIR}/lib")
 target_link_libraries(mmts-controller-test PRIVATE Qt6::Gui avcodec avutil swscale)
-if(WIN32)
-    target_link_libraries(mmts-controller-test PRIVATE Winscard ws2_32)
-endif()
+enable_windows_runtime(mmts-controller-test)
 
 # EDL model round-trip test (no GUI / ffmpeg).
 add_executable(mmts-edit-test
@@ -190,24 +203,23 @@ add_executable(mmts-edit-test
 target_include_directories(mmts-edit-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/model")
 target_link_libraries(mmts-edit-test PRIVATE Qt6::Core)
 
-# TS export test (uses dantto4k + tsduck + ffmpeg/avutil).
-add_executable(mmts-ts-export-test
-    tests/ts_export_test.cpp
-    src/model/MmtsMap.cpp src/model/MmtsMap.h
-    src/model/MmtsEdit.cpp src/model/MmtsEdit.h
-    src/model/MmtsCutPlan.cpp src/model/MmtsCutPlan.h
-    src/decode/MmtsTsExporter.cpp src/decode/MmtsTsExporter.h
-    src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
-    ${REMUX_SRC}
-    ${DANTTO4K_SRC_FILES})
-target_compile_definitions(mmts-ts-export-test PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
-target_include_directories(mmts-ts-export-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
-target_link_directories(mmts-ts-export-test PRIVATE "${FFMPEG_DIR}/lib")
-target_link_libraries(mmts-ts-export-test PRIVATE Qt6::Core avcodec avutil swscale)
-if(WIN32)
-    target_link_libraries(mmts-ts-export-test PRIVATE Winscard ws2_32)
+if(MMTS_ENABLE_TSDUCK)
+    # TS export test (uses dantto4k + tsduck + ffmpeg/avutil).
+    add_executable(mmts-ts-export-test
+        tests/ts_export_test.cpp
+        src/model/MmtsMap.cpp src/model/MmtsMap.h
+        src/model/MmtsEdit.cpp src/model/MmtsEdit.h
+        src/model/MmtsCutPlan.cpp src/model/MmtsCutPlan.h
+        src/decode/MmtsTsExporter.cpp src/decode/MmtsTsExporter.h
+        src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
+        ${REMUX_SRC}
+        ${DANTTO4K_SRC_FILES})
+    target_include_directories(mmts-ts-export-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
+    target_link_directories(mmts-ts-export-test PRIVATE "${FFMPEG_DIR}/lib")
+    target_link_libraries(mmts-ts-export-test PRIVATE Qt6::Core avcodec avutil swscale)
+    enable_windows_runtime(mmts-ts-export-test)
+    enable_tsduck(mmts-ts-export-test)
 endif()
-enable_tsduck(mmts-ts-export-test)
 
 # HEVC re-encode test (smart-render building block; uses dantto4k + ffmpeg).
 add_executable(mmts-reencode-test
@@ -215,13 +227,10 @@ add_executable(mmts-reencode-test
     src/model/MmtsMap.cpp src/model/MmtsMap.h
     src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
     ${DANTTO4K_SRC_FILES})
-target_compile_definitions(mmts-reencode-test PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
 target_include_directories(mmts-reencode-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_directories(mmts-reencode-test PRIVATE "${FFMPEG_DIR}/lib")
 target_link_libraries(mmts-reencode-test PRIVATE Qt6::Core avcodec avutil swscale)
-if(WIN32)
-    target_link_libraries(mmts-reencode-test PRIVATE Winscard ws2_32)
-endif()
+enable_windows_runtime(mmts-reencode-test)
 
 # .mmtsmap generation test (uses dantto4k; no ffmpeg).
 add_executable(mmts-mapbuild-test
@@ -229,12 +238,9 @@ add_executable(mmts-mapbuild-test
     src/model/MmtsMap.cpp src/model/MmtsMap.h
     src/decode/MmtsMapBuilder.cpp src/decode/MmtsMapBuilder.h
     ${DANTTO4K_SRC_FILES})
-target_compile_definitions(mmts-mapbuild-test PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
 target_include_directories(mmts-mapbuild-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_libraries(mmts-mapbuild-test PRIVATE Qt6::Core)
-if(WIN32)
-    target_link_libraries(mmts-mapbuild-test PRIVATE Winscard ws2_32)
-endif()
+enable_windows_runtime(mmts-mapbuild-test)
 
 # Smart .mmts export test (frame-accurate; uses dantto4k + ffmpeg, no tsduck).
 add_executable(mmts-smart-export-test
@@ -245,13 +251,10 @@ add_executable(mmts-smart-export-test
     src/decode/MmtsSmartExporter.cpp src/decode/MmtsSmartExporter.h
     src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
     ${DANTTO4K_SRC_FILES})
-target_compile_definitions(mmts-smart-export-test PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
 target_include_directories(mmts-smart-export-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_directories(mmts-smart-export-test PRIVATE "${FFMPEG_DIR}/lib")
 target_link_libraries(mmts-smart-export-test PRIVATE Qt6::Core avcodec avutil swscale)
-if(WIN32)
-    target_link_libraries(mmts-smart-export-test PRIVATE Winscard ws2_32)
-endif()
+enable_windows_runtime(mmts-smart-export-test)
 
 # .mmts export (RAP-aligned copy) test (no ffmpeg).
 add_executable(mmts-export-test
@@ -265,13 +268,15 @@ target_link_libraries(mmts-export-test PRIVATE Qt6::Core)
 # ---------------------------------------------------------------------------
 # Copy required ffmpeg runtime DLLs next to the executables.
 # ---------------------------------------------------------------------------
-set(FFMPEG_DLLS avcodec-62 avutil-60 swscale-9 swresample-6)
-foreach(tgt mmts-edit-gui mmts-decode-test mmts-controller-test)
-    foreach(dll ${FFMPEG_DLLS})
-        if(EXISTS "${FFMPEG_DIR}/bin/${dll}.dll")
-            add_custom_command(TARGET ${tgt} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${FFMPEG_DIR}/bin/${dll}.dll" "$<TARGET_FILE_DIR:${tgt}>")
-        endif()
+if(WIN32)
+    set(FFMPEG_DLLS avcodec-62 avutil-60 swscale-9 swresample-6)
+    foreach(tgt mmts-edit-gui mmts-decode-test mmts-controller-test)
+        foreach(dll ${FFMPEG_DLLS})
+            if(EXISTS "${FFMPEG_DIR}/bin/${dll}.dll")
+                add_custom_command(TARGET ${tgt} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${FFMPEG_DIR}/bin/${dll}.dll" "$<TARGET_FILE_DIR:${tgt}>")
+            endif()
+        endforeach()
     endforeach()
-endforeach()
+endif()

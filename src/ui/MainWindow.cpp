@@ -5,7 +5,9 @@
 #include "MmtsMapBuilder.h"
 #include "MmtsCutPlan.h"
 #include "MmtsSmartExporter.h"
+#if MMTS_ENABLE_TSDUCK
 #include "MmtsTsExporter.h"
+#endif
 #include "PreviewWidget.h"
 
 #include <QAction>
@@ -60,6 +62,10 @@ MainWindow::MainWindow(QWidget* parent)
     connect(saveEditAction, &QAction::triggered, this, &MainWindow::saveEditDialog);
     auto* exportAction = new QAction("Export Edited TS...", this);
     connect(exportAction, &QAction::triggered, this, &MainWindow::exportMediaDialog);
+#if !MMTS_ENABLE_TSDUCK
+    exportAction->setEnabled(false);
+    exportAction->setToolTip("TS export is currently available only in Windows release builds.");
+#endif
     auto* exportMmtsAction = new QAction("Export Edited MMTS...", this);
     connect(exportMmtsAction, &QAction::triggered, this, &MainWindow::exportMmtsDialog);
     auto* fileMenu = menuBar()->addMenu("File");
@@ -609,6 +615,12 @@ void MainWindow::saveEditDialog()
 
 void MainWindow::exportMediaDialog()
 {
+#if !MMTS_ENABLE_TSDUCK
+    QMessageBox::information(this, "Export",
+                             "TS export is not available in this build.\n\n"
+                             "Use the Windows release to export edited MPEG-2 TS files.");
+    return;
+#else
     if (m_mediaPath.isEmpty() || m_map.path.isEmpty()) {
         QMessageBox::information(this, "Export", "Open the media (.mmts) first.");
         return;
@@ -709,6 +721,7 @@ void MainWindow::exportMediaDialog()
     statusBar()->showMessage(QString("Exporting %1 segments to TS...").arg(plan.size()));
     dlg->show();
     thread->start();
+#endif
 }
 
 void MainWindow::exportMmtsDialog()

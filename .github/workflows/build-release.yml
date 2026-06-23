@@ -1,0 +1,219 @@
+name: Build Release
+
+on:
+  push:
+    branches: [ "master", "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "master", "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-x64:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout mmts-edit-gui
+        uses: actions/checkout@v6
+
+      - name: Checkout dantto4k
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/dantto4k
+          path: dantto4k
+          submodules: recursive
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+
+      - name: Generate tsduck headers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binInclude = "dantto4k\thirdparty\tsduck\bin\include"
+          New-Item -ItemType Directory -Force $binInclude | Out-Null
+          python "dantto4k\thirdparty\tsduck\scripts\build-tsduck-header.py" tscore "$binInclude\tscore.h"
+          python "dantto4k\thirdparty\tsduck\scripts\build-tsduck-header.py" tsduck "$binInclude\tsduck.h"
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S . -B build-msvc -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
+            -DDANTTO4K_DIR="$env:GITHUB_WORKSPACE\dantto4k" `
+            -DFFMPEG_DIR="$env:GITHUB_WORKSPACE\thirdparty\ffmpeg" `
+            -DMMTS_ENABLE_TSDUCK=ON
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build-msvc --config Release --target mmts-edit-gui
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:GITHUB_SHA.Substring(0, 7) }
+          $package = "mmts-edit-gui-$version-win64"
+          $stage = Join-Path $env:RUNNER_TEMP $package
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          Copy-Item "build-msvc\Release\mmts-edit-gui.exe" $stage
+          Copy-Item "build-msvc\Release\avcodec-62.dll" $stage -ErrorAction SilentlyContinue
+          Copy-Item "build-msvc\Release\avutil-60.dll" $stage -ErrorAction SilentlyContinue
+          Copy-Item "build-msvc\Release\swscale-9.dll" $stage -ErrorAction SilentlyContinue
+          Copy-Item "build-msvc\Release\swresample-6.dll" $stage -ErrorAction SilentlyContinue
+          Copy-Item README.md, LICENSE $stage
+
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations --compiler-runtime "$stage\mmts-edit-gui.exe"
+
+          Compress-Archive -Path "$stage\*" -DestinationPath "$package.zip" -Force
+          "PACKAGE=$package.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64
+          path: ${{ env.PACKAGE }}
+
+      - name: Publish GitHub Release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.PACKAGE }}
+
+  linux-appimage:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout mmts-edit-gui
+        uses: actions/checkout@v6
+
+      - name: Checkout dantto4k
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/dantto4k
+          path: dantto4k
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libavcodec-dev \
+            libavutil-dev \
+            libswscale-dev \
+            libswresample-dev \
+            libgl1-mesa-dev \
+            libxkbcommon-x11-0 \
+            libxkbcommon-dev \
+            libfontconfig1-dev \
+            libfuse2 \
+            patchelf
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: linux
+          target: desktop
+          arch: gcc_64
+
+      - name: Prepare FFmpeg layout
+        run: |
+          set -eux
+          FFMPEG_DIR="$RUNNER_TEMP/ffmpeg-linux"
+          mkdir -p "$FFMPEG_DIR/bin"
+          ln -s /usr/include/x86_64-linux-gnu "$FFMPEG_DIR/include"
+          ln -s /usr/lib/x86_64-linux-gnu "$FFMPEG_DIR/lib"
+          for lib in libavcodec.so.59 libavutil.so.57 libswscale.so.6 libswresample.so.4; do
+            if [ -e "/usr/lib/x86_64-linux-gnu/$lib" ]; then
+              ln -s "/usr/lib/x86_64-linux-gnu/$lib" "$FFMPEG_DIR/bin/$lib"
+            fi
+          done
+          echo "FFMPEG_DIR=$FFMPEG_DIR" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-linux \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DDANTTO4K_DIR="$GITHUB_WORKSPACE/dantto4k" \
+            -DFFMPEG_DIR="$FFMPEG_DIR" \
+            -DMMTS_ENABLE_TSDUCK=OFF
+
+      - name: Build
+        run: cmake --build build-linux --parallel --target mmts-edit-gui
+
+      - name: Download linuxdeploy
+        run: |
+          set -eux
+          curl -L -o linuxdeploy-x86_64.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -L -o linuxdeploy-plugin-qt-x86_64.AppImage https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
+
+      - name: Package AppImage
+        env:
+          VERSION_TAG: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+        run: |
+          set -eux
+          VERSION="${VERSION_TAG}"
+          if [ "${#VERSION}" -gt 20 ]; then
+            VERSION="${VERSION:0:7}"
+          fi
+
+          cat > mmts-edit-gui.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=MMTS Edit GUI
+          Exec=mmts-edit-gui %f
+          Icon=mmts-edit-gui
+          Categories=AudioVideo;Video;Qt;
+          EOF
+
+          cat > mmts-edit-gui.svg <<'EOF'
+          <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+            <rect width="256" height="256" rx="40" fill="#0f172a"/>
+            <rect x="36" y="52" width="184" height="152" rx="20" fill="#1d4ed8"/>
+            <path d="M64 162 L64 94 L94 128 Z" fill="#f8fafc"/>
+            <rect x="110" y="112" width="24" height="32" rx="6" fill="#f8fafc"/>
+            <rect x="146" y="96" width="24" height="48" rx="6" fill="#bfdbfe"/>
+            <rect x="182" y="80" width="24" height="64" rx="6" fill="#93c5fd"/>
+          </svg>
+          EOF
+
+          mkdir -p AppDir/usr/bin AppDir/usr/share/doc/mmts-edit-gui
+          cp build-linux/mmts-edit-gui AppDir/usr/bin/
+          cp README.md LICENSE AppDir/usr/share/doc/mmts-edit-gui/
+
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          export LD_LIBRARY_PATH="$QT_ROOT_DIR/lib:${LD_LIBRARY_PATH:-}"
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+            -e AppDir/usr/bin/mmts-edit-gui \
+            -d mmts-edit-gui.desktop \
+            -i mmts-edit-gui.svg \
+            --plugin qt \
+            --output appimage
+
+          mv ./*.AppImage "mmts-edit-gui-$VERSION-linux-x86_64.AppImage"
+          echo "PACKAGE=mmts-edit-gui-$VERSION-linux-x86_64.AppImage" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-appimage
+          path: ${{ env.PACKAGE }}
+
+      - name: Publish GitHub Release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.PACKAGE }}

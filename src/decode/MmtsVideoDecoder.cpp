@@ -14,6 +14,7 @@ extern "C" {
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
 
 namespace {
 constexpr size_t kChunkBytes = 1u * 1024 * 1024;
@@ -106,7 +107,7 @@ bool MmtsVideoDecoder::open(const QString& mmtsPath, const MmtsMap& map, QString
 {
     close();
 
-    m_ifs.open(mmtsPath.toStdWString(), std::ios::binary);
+    m_ifs.open(std::filesystem::path(mmtsPath.toStdWString()), std::ios::binary);
     if (!m_ifs.is_open()) {
         if (errorMessage)
             *errorMessage = QStringLiteral("Cannot open media file: %1").arg(mmtsPath);
