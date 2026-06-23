@@ -34,6 +34,22 @@ jobs:
           target: desktop
           arch: win64_msvc2022_64
 
+      - name: Download FFmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'ffmpeg-win64-lgpl-shared.zip'
+          Invoke-WebRequest `
+            -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip' `
+            -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $env:RUNNER_TEMP -Force
+          $root = Get-ChildItem -Path $env:RUNNER_TEMP -Directory | Where-Object { $_.Name -like 'ffmpeg-master-latest-win64-lgpl-shared*' } | Select-Object -First 1
+          if (-not $root) {
+            throw 'Expanded FFmpeg directory not found.'
+          }
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\thirdparty" | Out-Null
+          Move-Item -LiteralPath $root.FullName -Destination "$env:GITHUB_WORKSPACE\thirdparty\ffmpeg"
+
       - name: Generate tsduck headers
         shell: pwsh
         run: |
@@ -108,6 +124,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
+            cmake \
             libavcodec-dev \
             libavutil-dev \
             libswscale-dev \
@@ -117,15 +134,10 @@ jobs:
             libxkbcommon-dev \
             libfontconfig1-dev \
             libfuse2 \
-            patchelf
-
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: "6.8.3"
-          host: linux
-          target: desktop
-          arch: gcc_64
+            patchelf \
+            qt6-base-dev \
+            qt6-base-dev-tools \
+            qt6-tools-dev-tools
 
       - name: Prepare FFmpeg layout
         run: |
@@ -145,7 +157,6 @@ jobs:
         run: |
           cmake -S . -B build-linux \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
             -DDANTTO4K_DIR="$GITHUB_WORKSPACE/dantto4k" \
             -DFFMPEG_DIR="$FFMPEG_DIR" \
             -DMMTS_ENABLE_TSDUCK=OFF
@@ -194,8 +205,7 @@ jobs:
           cp build-linux/mmts-edit-gui AppDir/usr/bin/
           cp README.md LICENSE AppDir/usr/share/doc/mmts-edit-gui/
 
-          export QMAKE="$QT_ROOT_DIR/bin/qmake"
-          export LD_LIBRARY_PATH="$QT_ROOT_DIR/lib:${LD_LIBRARY_PATH:-}"
+          export QMAKE=/usr/bin/qmake6
           ./linuxdeploy-x86_64.AppImage --appdir AppDir \
             -e AppDir/usr/bin/mmts-edit-gui \
             -d mmts-edit-gui.desktop \
