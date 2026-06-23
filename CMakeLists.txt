@@ -5,6 +5,7 @@ project(mmts_edit_gui VERSION 0.2.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
@@ -138,6 +139,8 @@ set(UI_SRC
 # ---------------------------------------------------------------------------
 add_executable(mmts-edit-gui WIN32
     src/main.cpp
+    resources/app.rc
+    resources/icons.qrc
     ${MODEL_SRC} ${DECODE_SRC} ${UI_SRC} ${TS_SRC}
     ${DANTTO4K_SRC_FILES})
 target_compile_definitions(mmts-edit-gui PRIVATE WIN32 _WINDOWS UNICODE _UNICODE)
