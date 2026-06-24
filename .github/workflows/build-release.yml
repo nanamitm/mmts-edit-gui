@@ -50,14 +50,39 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\thirdparty" | Out-Null
           Move-Item -LiteralPath $root.FullName -Destination "$env:GITHUB_WORKSPACE\thirdparty\ffmpeg"
 
-      - name: Generate tsduck headers
+      - name: Install TSDuck prerequisites
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $binInclude = "dantto4k\thirdparty\tsduck\bin\include"
-          New-Item -ItemType Directory -Force $binInclude | Out-Null
-          python "dantto4k\thirdparty\tsduck\scripts\build-tsduck-header.py" tscore "$binInclude\tscore.h"
-          python "dantto4k\thirdparty\tsduck\scripts\build-tsduck-header.py" tsduck "$binInclude\tsduck.h"
+          & "dantto4k\thirdparty\tsduck\scripts\install-prerequisites.ps1" `
+            -GitHubActions `
+            -NoDoxygen `
+            -NoInstaller `
+            -NoPause
+
+      - name: Patch TSDuck MSVC warning settings
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $propsPath = "dantto4k\thirdparty\tsduck\scripts\msvc\msvc-common-base.props"
+          $props = Get-Content -LiteralPath $propsPath -Raw
+          $pattern = "<DisableSpecificWarnings Condition=`"'`$\(MSBuildToolsVersion\)'=='17.0'`">4800;4702;4592;4505;5264;\$\(DisableSpecificWarnings\)</DisableSpecificWarnings>"
+          $replacement = "<DisableSpecificWarnings Condition=`"'`$\(MSBuildToolsVersion\)'=='17.0'`">4800;4702;4592;4505;4819;5264;\$\(DisableSpecificWarnings\)</DisableSpecificWarnings>"
+          $patched = [regex]::Replace($props, $pattern, $replacement, 1)
+          if ($patched -eq $props) {
+            throw "Failed to patch TSDuck warning settings."
+          }
+          Set-Content -LiteralPath $propsPath -Value $patched -Encoding utf8
+
+      - name: Build TSDuck static libraries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          msbuild "dantto4k\thirdparty\tsduck\scripts\msvc\tsduck.sln" `
+            /m `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            "/target:tscorelib;tsducklib"
 
       - name: Configure
         shell: pwsh
@@ -67,7 +92,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
             -DDANTTO4K_DIR="$env:GITHUB_WORKSPACE\dantto4k" `
             -DFFMPEG_DIR="$env:GITHUB_WORKSPACE\thirdparty\ffmpeg" `
-            -DMMTS_ENABLE_TSDUCK=OFF
+            -DMMTS_ENABLE_TSDUCK=ON
 
       - name: Build
         shell: pwsh
