@@ -78,11 +78,19 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          msbuild "dantto4k\thirdparty\tsduck\scripts\msvc\tsduck.sln" `
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
+          if (-not $msbuild) {
+            throw "MSBuild not found."
+          }
+          & $msbuild "dantto4k\thirdparty\tsduck\scripts\msvc\tsduck.sln" `
             /m `
             /p:Configuration=Release `
             /p:Platform=x64 `
             "/target:tscorelib;tsducklib"
+          if ($LASTEXITCODE -ne 0) {
+            throw "TSDuck static library build failed."
+          }
 
       - name: Configure
         shell: pwsh
