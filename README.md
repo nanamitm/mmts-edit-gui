@@ -105,6 +105,26 @@ MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
   どおり動作し、シーケンス連続性チェックを行う再生側でもそのまま扱えます。
   音声/字幕は MPU 粒度（〜0.1 秒）で `[IN, OUT)` にゲーティングされます。
 
+### 7. コマンドライン版（`mmts-edit-cli`）
+
+GUI を開かずに書き出すための、GUI の Export メニューと同じエクスポータ
+（`MmtsSmartExporter` / `MmtsTsExporter`）を使うヘッドレス CLI。GUI で対話的に
+カットして `.mmtsedit` を保存し、それを CLI でバッチ書き出しする使い方を想定
+（大きな 8K 録画を毎回 GUI で開き直さずに済む）。
+
+```text
+mmts-edit-cli --edit <project.mmtsedit> --output <out.ts|out.mmts> [options]
+mmts-edit-cli --input <src.mmts> --output <out.ts|out.mmts> --cut <start>-<end> [--cut ...] [options]
+```
+
+- 出力フォーマットは `--output` の拡張子で決まる: `.ts`（連続 PTS の MPEG-2 TS、
+  tsduck 有効ビルドが必要）/ `.mmts`（フレーム精度の MMT/TLV）。
+- `.mmtsmap` サイドカーが無い場合は自動でスキャン・生成する（`--map` で明示指定可）。
+- `--cut` の時刻はミリ秒、または `[HH:]MM:SS[.mmm]` 形式のタイムコードで指定。
+- `--no-frame-accurate`: 境界の再エンコードが（GPU 非対応などで）できない場合に
+  失敗させず RAP 境界へフォールバックする。既定はフレーム精度を要求して失敗させる。
+- `--quiet`: 進捗出力を抑制。
+
 ## 依存関係
 
 - Qt 6（Widgets）。
@@ -149,6 +169,7 @@ src/
   ui/       MainWindow, PreviewWidget, TimelineWidget
 tests/      decode_test, controller_test, edit_test, mapbuild_test,
             export_test, ts_export_test, smart_export_test  (ヘッドレスのスモークテスト)
+            mmts_edit_cli  (CLI 本体。`mmts-edit-cli` 実行ファイルとしてビルド)
 ```
 
 ## ビルド

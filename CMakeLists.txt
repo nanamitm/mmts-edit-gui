@@ -266,11 +266,34 @@ target_include_directories(mmts-export-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(mmts-export-test PRIVATE Qt6::Core)
 
 # ---------------------------------------------------------------------------
+# mmts-edit-cli: headless CLI counterpart to mmts-edit-gui (export an existing
+# .mmtsedit, or ad-hoc --cut ranges, to .ts/.mmts without opening the GUI).
+# ---------------------------------------------------------------------------
+add_executable(mmts-edit-cli
+    tests/mmts_edit_cli.cpp
+    src/model/MmtsMap.cpp     src/model/MmtsMap.h
+    src/model/MmtsEdit.cpp    src/model/MmtsEdit.h
+    src/model/MmtsCutPlan.cpp src/model/MmtsCutPlan.h
+    src/decode/MmtsMapBuilder.cpp   src/decode/MmtsMapBuilder.h
+    src/decode/HevcReencoder.cpp    src/decode/HevcReencoder.h
+    src/decode/MmtsSmartExporter.cpp src/decode/MmtsSmartExporter.h
+    ${TS_SRC}
+    ${DANTTO4K_SRC_FILES})
+target_compile_definitions(mmts-edit-cli PRIVATE MMTS_ENABLE_TSDUCK=$<BOOL:${MMTS_ENABLE_TSDUCK}>)
+target_include_directories(mmts-edit-cli PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
+target_link_directories(mmts-edit-cli PRIVATE "${FFMPEG_DIR}/lib")
+target_link_libraries(mmts-edit-cli PRIVATE Qt6::Core avcodec avutil swscale)
+enable_windows_runtime(mmts-edit-cli)
+if(MMTS_ENABLE_TSDUCK)
+    enable_tsduck(mmts-edit-cli)
+endif()
+
+# ---------------------------------------------------------------------------
 # Copy required ffmpeg runtime DLLs next to the executables.
 # ---------------------------------------------------------------------------
 if(WIN32)
     set(FFMPEG_DLLS avcodec-62 avutil-60 swscale-9 swresample-6)
-    foreach(tgt mmts-edit-gui mmts-decode-test mmts-controller-test)
+    foreach(tgt mmts-edit-gui mmts-decode-test mmts-controller-test mmts-edit-cli)
         foreach(dll ${FFMPEG_DLLS})
             if(EXISTS "${FFMPEG_DIR}/bin/${dll}.dll")
                 add_custom_command(TARGET ${tgt} POST_BUILD
