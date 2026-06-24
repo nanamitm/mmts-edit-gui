@@ -17,6 +17,10 @@ struct MmtsCutSegment {
     qint64 endByte = 0;      // demux end: RAP at/after OUT
     qint64 copyStartMs = 0;  // stream-copy video range (abs ms); empty if >= copyEndMs
     qint64 copyEndMs = 0;
+    // True if IN falls before the stream's first RAP: those leading frames were
+    // never recorded (capture starts mid-GOP), so a lead-in re-encode isn't
+    // just unavailable, it's impossible -- there is nothing earlier to decode.
+    bool leadInImpossible = false;
 };
 
 // Within ~1 frame of a RAP -> treat as RAP-aligned (no boundary re-encode).

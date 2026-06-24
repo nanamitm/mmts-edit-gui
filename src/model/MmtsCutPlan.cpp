@@ -19,14 +19,26 @@ QVector<MmtsCutSegment> planMmtsCutSegments(const MmtsMap& map,
         if (s.outAbsMs <= s.inAbsMs)
             continue;
 
-        // RAPs around IN: prev (demux start) and next (copy start).
+        // RAPs around IN: prev (demux start) and next (copy start). A RAP exactly
+        // at IN must satisfy both -- otherwise an IN that already lands on a RAP
+        // (e.g. the very start of the stream, or a "Snap to RAP" cut) looks like
+        // it needs a lead-in re-encode when no boundary work is needed at all.
         qint64 prevByte = 0;
         qint64 rNextMs = -1;
         for (const auto& p : raps) {
             if (p.timeMs <= s.inAbsMs) prevByte = static_cast<qint64>(p.offset);
-            else { rNextMs = p.timeMs; break; }
+            if (p.timeMs >= s.inAbsMs) { rNextMs = p.timeMs; break; }
         }
         if (rNextMs < 0) rNextMs = s.inAbsMs;
+
+        // A recording's very first GOP is usually incomplete (capture starts at
+        // an arbitrary point, not on a keyframe boundary): if IN falls before
+        // the stream's first RAP, the leading frames were simply never
+        // recorded, so a lead-in re-encode is not just unavailable but
+        // impossible -- there is no earlier reference frame to decode from.
+        // Flag this so the exporters can snap to the first RAP without first
+        // attempting (and always failing) a decode.
+        const bool leadInImpossible = !raps.isEmpty() && s.inAbsMs < raps.front().timeMs;
 
         // OUT (frame-accurate): rLast = last RAP at/before OUT (the tail boundary,
         // an IRAP we can decode-cleanly cut at); rEnd = first RAP at/after OUT
@@ -45,6 +57,7 @@ QVector<MmtsCutSegment> planMmtsCutSegments(const MmtsMap& map,
         s.copyStartMs = reencIn ? rNextMs : s.inAbsMs;
         s.copyEndMs = reencOut ? rLastMs : outFaMs;
         s.outAbsMs = outFaMs;
+        s.leadInImpossible = leadInImpossible;
 
         // Segment shorter than the copy span (IN/OUT inside one GOP, or copyStart
         // past copyEnd): no stream copy -- re-encode the whole [IN, OUT) as lead-in.

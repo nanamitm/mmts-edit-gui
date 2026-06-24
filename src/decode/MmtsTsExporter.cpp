@@ -157,6 +157,7 @@ QVector<MmtsTsExporter::Segment> MmtsTsExporter::planSegments(const MmtsMap& map
         s.endByte = c.endByte;
         s.copyStartMs = c.copyStartMs;
         s.copyEndMs = c.copyEndMs;
+        s.leadInImpossible = c.leadInImpossible;
         out.push_back(s);
     }
     return out;
@@ -217,7 +218,13 @@ bool MmtsTsExporter::exportTs(const QString& srcPath, const QString& dstPath,
         // Lead-in re-encode [IN, copyStart) (also the whole segment when copy is empty).
         if (seg.copyStartMs - seg.inAbsMs > kThr) {
             QString rerr;
-            if (!reenc.reencode(srcPath, map, seg.inAbsMs - firstPts, seg.copyStartMs - firstPts, leadIn, &rerr)) {
+            const bool reencOk = seg.leadInImpossible
+                ? false
+                : reenc.reencode(srcPath, map, seg.inAbsMs - firstPts, seg.copyStartMs - firstPts, leadIn, &rerr);
+            if (seg.leadInImpossible) {
+                rerr = QStringLiteral("IN is before the recording's first keyframe; those leading frames were never captured.");
+            }
+            if (!reencOk) {
                 const QString message = QString("Segment #%1 lead-in re-encode failed; IN cannot be exported frame-accurately. %2")
                     .arg(segmentNo)
                     .arg(rerr);

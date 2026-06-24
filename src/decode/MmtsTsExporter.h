@@ -29,6 +29,7 @@ public:
         qint64 endByte = 0;      // demux end: RAP at/after OUT
         qint64 copyStartMs = 0;  // stream-copy video range (abs ms); empty if >= copyEndMs
         qint64 copyEndMs = 0;
+        bool leadInImpossible = false; // see MmtsCutSegment::leadInImpossible
     };
 
     static QVector<Segment> planSegments(const MmtsMap& map,

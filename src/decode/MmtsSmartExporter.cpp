@@ -525,7 +525,12 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         qint64 effOutMs = seg.outAbsMs;
         if (seg.copyStartMs - seg.inAbsMs > kMmtsCutRapThresholdMs) {
             QString rerr;
-            if (!reenc.reencode(srcPath, map, seg.inAbsMs - firstPts, seg.copyStartMs - firstPts, leadIn, &rerr)) {
+            const bool reencOk = seg.leadInImpossible
+                ? false
+                : reenc.reencode(srcPath, map, seg.inAbsMs - firstPts, seg.copyStartMs - firstPts, leadIn, &rerr);
+            if (seg.leadInImpossible)
+                rerr = QStringLiteral("IN is before the recording's first keyframe; those leading frames were never captured.");
+            if (!reencOk) {
                 const QString message = QString("Segment #%1 lead-in re-encode failed; IN cannot be exported frame-accurately. %2")
                     .arg(segmentNo).arg(rerr);
                 if (requireFrameAccurate)
