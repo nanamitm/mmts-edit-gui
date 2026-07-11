@@ -133,6 +133,7 @@ jobs:
         with:
           name: windows-x64
           path: ${{ env.PACKAGE }}
+          retention-days: 7
 
       - name: Publish GitHub Release asset
         if: startsWith(github.ref, 'refs/tags/')
@@ -256,6 +257,7 @@ jobs:
         with:
           name: linux-appimage
           path: ${{ env.PACKAGE }}
+          retention-days: 7
 
       - name: Publish GitHub Release asset
         if: startsWith(github.ref, 'refs/tags/')
