@@ -1,144 +1,165 @@
 # MMTS Edit GUI
 
-MMTS（MMT/TLV）を非破壊編集するための Qt6/C++ プロトタイプ。
+A Qt 6/C++ prototype for non-destructive editing of MMTS (MMT/TLV) media.
 
-## 主な機能
+## Features
 
-- テキスト形式 `MMTSMAP 1` / バイナリ形式 `MMTSMAP2` のサイドカーを読み込み。
-- トラック / MPT / RAP / シーク点の数を表示。
-- シーク・RAP・MPT マーカー付きの軽量タイムラインを描画。
-- **フレーム精度の映像プレビュー**（復号済み `.mmts`）: dantto4k の MMT/TLV
-  デマルチプレクサ + libavcodec(HEVC) でデコード。シークバーと ±1 フレーム送りに
-  対応。シークは `.mmtsmap` の直前 RAP へ飛んでから目的フレームまで前方デコードする。
-  デコードはワーカースレッドで実行（UI は固まらない）。スクラブ要求は最新のみ採用
-  （coalescing）、直近フレームはキャッシュするため、前方送りは高速・往復は即時。
-- 現在のプレビュー位置から In/Out を設定。
-- **対話的タイムライン**: 再生ヘッドがプレビューに追従。レーンのクリック/ドラッグで
-  シーク＆区間選択。選択区間の In/Out グリップをドラッグしてトリム（「Snap to RAP」
-  で RAP に吸着可）。
-- **複数区間 EDL**: Segments パネルでカット一覧を管理。Add / Split @ playhead /
-  Delete で非破壊のカットリストを作成。編集後のプログラムは区間を順に連結したもの。
-- `.mmtsedit` サイドカー（version 1、`timeline` = 順序付き区間）の保存/読込。
-- 編集結果を **MPEG-2 TS(.ts) として書き出し**（`File > Export Edited TS...`）:
-  各区間を demux→dantto4k の RemuxerHandler で再多重化（HEVC+AAC を TS 化、再エンコード
-  なし）。区間ごとに PTS/DTS を再ベースし、**継ぎ目のタイムスタンプを連続化**するため、
-  汎用プレイヤーでもなめらかに再生できる（出力 TS の総尺＝各区間尺の合計）。tsduck を
-  静的リンクして GUI 内で実行。字幕（ARIB字幕）も区間オフセットを適用して出力に含める。
-  **IN/OUT ともフレーム精度**（スマートレンダリング）：IN が RAP 上でなければ lead-in
-  `[IN, 次のRAP)` を、OUT が RAP 上でなければ tail `[最後のRAP, OUT)` を hevc_nvenc で
-  再エンコード（IDR 始まりの GOP）し、その間をストリームコピーで接合する。コピー終端は
-  **デコード順（DTS）で切る**ため、open-GOP の境界参照（RASL の先行ピクチャ）が宙に
-  浮かず、繋ぎ目もデコード破綻しない。
-- 編集結果を **MMTS(.mmts) として書き出し**（`File > Export Edited MMTS...`）:
-  コピー区間はメディアの TLV パケットをバイト一致で透過コピー（無劣化）し、境界の部分
-  GOP だけを再エンコードして MMT/TLV パケットとして合成・差し替える（**IN/OUT とも
-  フレーム精度**）。音声/字幕 MPU は `[IN, OUT)` でゲーティングする。
-  **出力タイムラインは連続**: MMT のプレゼンテーション時刻は MPT の `mpu_timestamp`
-  記述子（とPCR源の NTP パケット）にしか存在しないため、2 区間目以降は全 MPT の
-  タイムスタンプエントリと NTP をシフトして継ぎ目を詰める（メディアペイロードは
-  無改変のまま）。**シーケンス番号も連続**: MMTP パケットシーケンスは全 pid、MPU
-  シーケンスは映像/音声/字幕で出力全体を通して +1 連続に振り直す（MPT エントリの
-  参照番号も同時に翻訳。データカルーセルの pid は番号自体が ID なので元のまま）。
+- Reads text-format `MMTSMAP 1` and binary-format `MMTSMAP2` sidecar indexes.
+- Displays the number of tracks, MPT entries, RAPs, and seek points.
+- Draws a lightweight timeline with seek, RAP, and MPT markers.
+- **Frame-accurate video preview** for decrypted `.mmts` files: decodes with
+  dantto4k's MMT/TLV demultiplexer and libavcodec (HEVC). Supports a seek bar
+  and ±1-frame stepping. Seeking starts at the preceding RAP recorded in the
+  `.mmtsmap`, then decodes forward to the requested frame. Decoding runs on a
+  worker thread, so the UI remains responsive. Only the latest scrub request
+  is used (coalescing), and recently decoded frames are cached for fast
+  forward stepping and immediate back-and-forth navigation.
+- Sets In and Out points at the current preview position.
+- **Interactive timeline**: the playhead follows the preview. Click or drag a
+  lane to seek and select ranges. Drag the selected range's In/Out grips to
+  trim it; **Snap to RAP** can snap boundaries to RAPs.
+- **Multi-segment EDL**: manage a cut list in the Segments panel with Add,
+  Split @ playhead, and Delete. The edited program is the ordered
+  concatenation of its segments.
+- Saves and loads `.mmtsedit` sidecars (version 1, with an ordered `timeline`
+  of segments).
+- Exports the edited result as **MPEG-2 TS (`.ts`)** (`File > Export Edited
+  TS...`): each segment is demultiplexed and remultiplexed through dantto4k's
+  `RemuxerHandler` (HEVC + AAC to TS, without re-encoding). PTS/DTS values are
+  rebased for each segment and **made continuous across joins**, so the output
+  plays smoothly in general-purpose players (total TS duration equals the sum
+  of the segment durations). tsduck is statically linked and runs inside the
+  GUI. ARIB subtitles are included with their segment offsets applied. Both
+  **In and Out are frame-accurate** through smart rendering: when In is not a
+  RAP, the lead-in `[IN, next RAP)` is re-encoded with hevc_nvenc as an
+  IDR-starting GOP; when Out is not a RAP, the tail `[last RAP, OUT)` is
+  re-encoded. The middle is stream-copied and joined to those portions. Copy
+  ranges end in **decode order (DTS)**, preventing dangling boundary
+  references from open-GOP RASL leading pictures and avoiding decode failures
+  at joins.
+- Exports the edited result as **MMTS (`.mmts`)** (`File > Export Edited
+  MMTS...`): copied ranges pass media TLV packets through byte-for-byte,
+  without quality loss. Only partial GOPs at boundaries are re-encoded and
+  repacked as MMT/TLV packets, so both **In and Out are frame-accurate**.
+  Audio and subtitle MPUs are gated to `[IN, OUT)`. **The output timeline is
+  continuous**: MMT presentation times exist only in MPT `mpu_timestamp`
+  descriptors and PCR-source NTP packets, so timestamp entries in all later
+  MPTs and their NTP packets are shifted to close joins while media payloads
+  remain untouched. **Sequence numbers are also continuous**: MMTP packet
+  sequences for every PID and MPU sequences for video, audio, and subtitles
+  are renumbered consecutively across the output; MPT reference numbers are
+  translated at the same time. Data-carousel PIDs keep their original numbers
+  because those numbers are identifiers.
 
-## 使い方
+## Usage
 
-本エディタは非破壊で、元の `.mmts` を変更しません。編集内容は「ソースの時間範囲の
-リスト（EDL）」として小さな `.mmtsedit` ファイルに保存され、`Export` でそのリストから
-新しい `.mmts` を生成します。
+The editor is non-destructive and never changes the original `.mmts` file.
+Edits are saved in a small `.mmtsedit` file as an ordered list of source time
+ranges (an EDL). `Export` uses that list to create a new `.mmts` file.
 
-### 1. メディアを開く
+### 1. Open media
 
-- `File > Open Media...` で（復号済みの）`.mmts` を選択。
-- 同じ場所のサイドカーインデックス `<名前>.mmtsmap` を読み込みます。**マップが無い
-  場合はアプリが作成を提案**し、ファイル全体をスキャンして生成します（大きな 8K
-  録画では数分かかることがあります。キャンセル付きの進捗ダイアログを表示）。結果は
-  `dantto4k --write-mmtsmap-only` と同一です。
-- 読み込みが終わると先頭フレームがプレビューに表示され、タイムラインに
-  RAP（青）/ シーク（緑）/ MPT（橙）のマーカーが出ます。
+- Choose a decrypted `.mmts` file with `File > Open Media...`.
+- The matching sidecar index, `<name>.mmtsmap`, is loaded from the same
+  location. **If no map exists, the application offers to create one** by
+  scanning the complete file. This can take several minutes for large 8K
+  recordings; a cancellable progress dialog is shown. The result is the same
+  as `dantto4k --write-mmtsmap-only`.
+- When loading finishes, the first frame appears in the preview and the
+  timeline shows RAP (blue), seek (green), and MPT (orange) markers.
 
-### 2. プレビューを操作する
+### 2. Control the preview
 
-- **シークバー**のドラッグ、または**タイムラインのレーン**をクリック/ドラッグして
-  スクラブします。
-- **`-1f` / `+1f`** で 1 フレーム単位の後退/前進（フレーム精度）。位置ラベルに
-  `HH:MM:SS.mmm (#フレーム番号)` を表示します。
-- 前方送りは高速で、ある地点付近の往復は即時です（直近のデコード済みフレームを
-  キャッシュ）。
+- Drag the **seek bar**, or click or drag a **timeline lane**, to scrub.
+- Use **`-1f` / `+1f`** to move backward or forward by one frame. The position
+  label shows `HH:MM:SS.mmm (frame number)`.
+- Forward stepping is fast, and moving back and forth near a position is
+  immediate because recently decoded frames are cached.
 
-### 3. カットリストを作る（Segments タブ）
+### 3. Create a cut list (Segments tab)
 
-編集後のプログラムは、**区間を順に連結**したものです。
+The edited program is the **ordered concatenation of its segments**.
 
-- **Add** — 現在の再生ヘッドから末尾までの区間を追加。
-- **Split @ playhead** — 再生ヘッド位置で区間を 2 つに分割。
-- **Delete** — 選択中の区間を削除。
-- 区間を選択（テーブル、またはタイムライン上のブロックをクリック）し、**`Set In` /
-  `Set Out`**（現在のプレビュー位置を使用）、**In/Out スピンボックス**、または
-  タイムライン上の赤/橙の**グリップ**のドラッグで境界を設定します。
-- **Snap to RAP**（ツールバー、既定オン）は In/Out ドラッグを最寄りのランダム
-  アクセス点に吸着させ、カットをクリーンな GOP 境界に合わせます。
+- **Add** — Adds a segment from the current playhead to the end.
+- **Split @ playhead** — Splits the segment at the playhead.
+- **Delete** — Deletes the selected segment.
+- Select a segment in the table or by clicking its timeline block. Set its
+  boundaries with **`Set In` / `Set Out`** (using the current preview
+  position), the **In/Out spin boxes**, or by dragging the red/orange
+  **grips** on the timeline.
+- **Snap to RAP** (enabled by default in the toolbar) snaps In/Out dragging to
+  the nearest random-access point for clean GOP boundaries.
 
-### 4. 編集の保存 / 読込
+### 4. Save or load an edit
 
-- `File > Save Edit...` で `.mmtsedit`（EDL）を保存。
-- `File > Open Edit...` で復元。参照先のマップ**とソースメディア**を読み込むため、
-  すぐにプレビューが使えます。
+- Use `File > Save Edit...` to save the `.mmtsedit` EDL.
+- Use `File > Open Edit...` to restore it. The referenced map **and source
+  media** are loaded, so the preview is available immediately.
 
-### 5. TS を書き出す
+### 5. Export TS
 
-- `File > Export Edited TS...` で、区間だけを連結した **MPEG-2 TS(.ts)** を生成します。
-  各区間を demux→TS 再多重化し（HEVC+AAC、再エンコードなし）、PTS/DTS を連続化します。
-  キャンセル付きの進捗ダイアログを表示します。
-- 継ぎ目のタイムスタンプが連続化されるため、汎用プレイヤーでもなめらかに再生できます。
-  **IN / OUT ともフレーム精度**（RAP 上でなければ lead-in / tail を再エンコードして接合）。
-  字幕（ARIB字幕）も含まれます。Snap to RAP を切れば任意フレームで IN/OUT を切れます
-  （その区間は再エンコードが入るぶん書き出しに時間がかかります）。
+- Use `File > Export Edited TS...` to create an **MPEG-2 TS (`.ts`)** made by
+  concatenating only the selected segments. Each segment is demultiplexed and
+  remultiplexed to TS (HEVC + AAC, without re-encoding), with continuous
+  PTS/DTS. A cancellable progress dialog is shown.
+- Joins have continuous timestamps, so the result plays smoothly in
+  general-purpose players. Both **In and Out are frame-accurate**: if a
+  boundary is not a RAP, its lead-in or tail is re-encoded and joined. ARIB
+  subtitles are included. Disable Snap to RAP to cut at any frame; exporting
+  such ranges takes longer because they require re-encoding.
 
-### 6. MMTS を書き出す
+### 6. Export MMTS
 
-- `File > Export Edited MMTS...` で、区間だけを連結した **MMT/TLV(.mmts)** を生成します。
-  コピー区間は元のメディアパケットをそのまま透過するため**無劣化**、境界の部分 GOP のみ
-  hevc_nvenc で再エンコードして MMT パケットに再パックします（**IN/OUT ともフレーム精度**）。
-- **タイムラインもシーケンス番号も連続化されます**: タイムスタンプは MPT シグナリング
-  （と NTP パケット）の書き換えで、MMTP パケット/MPU シーケンス番号はヘッダフィールドの
-  振り直しで連続化します（メディアペイロードは無改変）。シークも区間をまたいで通常
-  どおり動作し、シーケンス連続性チェックを行う再生側でもそのまま扱えます。
-  音声/字幕は MPU 粒度（〜0.1 秒）で `[IN, OUT)` にゲーティングされます。
+- Use `File > Export Edited MMTS...` to create an **MMT/TLV (`.mmts`)** file
+  made by concatenating only the selected segments. Copied ranges pass the
+  original media packets through unchanged, with no quality loss; only partial
+  boundary GOPs are re-encoded with hevc_nvenc and repacked as MMT packets.
+  Both **In and Out are frame-accurate**.
+- **Timeline and sequence numbers are continuous**: timestamps are adjusted
+  through MPT signalling and NTP packets, while MMTP packet and MPU sequence
+  numbers are made continuous by rewriting header fields. Media payloads stay
+  unchanged. Seeking continues to work across segments, and players that
+  check sequence continuity can consume the output directly. Audio and
+  subtitles are gated to `[IN, OUT)` at MPU granularity (approximately 0.1 s).
 
-### 7. コマンドライン版（`mmts-edit-cli`）
+### 7. Command-line version (`mmts-edit-cli`)
 
-GUI を開かずに書き出すための、GUI の Export メニューと同じエクスポータ
-（`MmtsSmartExporter` / `MmtsTsExporter`）を使うヘッドレス CLI。GUI で対話的に
-カットして `.mmtsedit` を保存し、それを CLI でバッチ書き出しする使い方を想定
-（大きな 8K 録画を毎回 GUI で開き直さずに済む）。
+A headless CLI that uses the same exporters as the GUI Export menu
+(`MmtsSmartExporter` / `MmtsTsExporter`) without opening the GUI. The intended
+workflow is to cut interactively in the GUI, save an `.mmtsedit`, and batch
+export it with the CLI without reopening large 8K recordings in the GUI.
 
 ```text
 mmts-edit-cli --edit <project.mmtsedit> --output <out.ts|out.mmts> [options]
 mmts-edit-cli --input <src.mmts> --output <out.ts|out.mmts> --cut <start>-<end> [--cut ...] [options]
 ```
 
-- 出力フォーマットは `--output` の拡張子で決まる: `.ts`（連続 PTS の MPEG-2 TS、
-  tsduck 有効ビルドが必要）/ `.mmts`（フレーム精度の MMT/TLV）。
-- `.mmtsmap` サイドカーが無い場合は自動でスキャン・生成する（`--map` で明示指定可）。
-- `--cut` の時刻はミリ秒、または `[HH:]MM:SS[.mmm]` 形式のタイムコードで指定。
-- `--no-frame-accurate`: 境界の再エンコードが（GPU 非対応などで）できない場合に
-  失敗させず RAP 境界へフォールバックする。既定はフレーム精度を要求して失敗させる。
-- `--quiet`: 進捗出力を抑制。
+- The output format is determined by the `--output` extension: `.ts` for
+  MPEG-2 TS with continuous PTS (requires a tsduck-enabled build), or `.mmts`
+  for frame-accurate MMT/TLV.
+- If a `.mmtsmap` sidecar is missing, it is scanned and created automatically;
+  use `--map` to specify one explicitly.
+- `--cut` timestamps may be milliseconds or timecodes in
+  `[HH:]MM:SS[.mmm]` format.
+- `--no-frame-accurate` falls back to RAP boundaries instead of failing when
+  boundary re-encoding is unavailable, such as on systems without a supported
+  GPU. By default, frame accuracy is required and such an export fails.
+- `--quiet` suppresses progress output.
 
-## 依存関係
+## Dependencies
 
-- Qt 6（Widgets）。
-- dantto4k のソース。既定では `../dantto4k` を参照（CAS 非依存のサブセットを直接
-  コンパイル）。
-- ビルド済み ffmpeg 開発ライブラリ（LGPL shared）を `thirdparty/ffmpeg`
-  （`include/lib/bin`）に配置。場所は `-DDANTTO4K_DIR=...` / `-DFFMPEG_DIR=...` で
-  上書き可能。
-- tsduck（TS 出力用）。dantto4k の `thirdparty/tsduck` にビルド済みの静的ライブラリ
-  （`bin/<Config>-x64/tsducklib.lib` `tscorelib.lib` と `bin/include`）が必要。dantto4k を
-  一度ビルドすれば生成される。
+- Qt 6 (Widgets).
+- dantto4k sources. The default location is `../dantto4k`; the project
+  compiles a CAS-independent subset directly.
+- Prebuilt LGPL shared ffmpeg development libraries in `thirdparty/ffmpeg`
+  (`include/lib/bin`). Override locations with `-DDANTTO4K_DIR=...` and
+  `-DFFMPEG_DIR=...`.
+- tsduck for TS export. dantto4k's `thirdparty/tsduck` must contain built
+  static libraries (`bin/<Config>-x64/tsducklib.lib`, `tscorelib.lib`) and
+  `bin/include`. Building dantto4k once creates them.
 
-`.mmtsedit` の形式（`timeline` はソースのカット区間の順序付きリスト。編集後の
-プログラムはその連結）:
+`.mmtsedit` format (`timeline` is an ordered list of source cut ranges; the
+edited program is their concatenation):
 
 ```json
 {
@@ -153,38 +174,38 @@ mmts-edit-cli --input <src.mmts> --output <out.ts|out.mmts> --cut <start>-<end> 
 }
 ```
 
-## ディレクトリ構成
+## Directory layout
 
 ```text
 src/
   main.cpp
-  model/    MmtsMap, MmtsEdit          (.mmtsmap / .mmtsedit のパース、EDL モデル)
-            MmtsCutPlan                (EDL→RAP境界/コピー範囲の共有プランナ)
-            MmtsExporter               (RAP境界バイトコピーの .mmts 出力)
-  decode/   MmtsVideoDecoder           (フレーム精度 HEVC デコード)
-            MmtsDecodeController        (ワーカースレッド + 先読み + フレームキャッシュ)
-            MmtsMapBuilder             (dantto4k スキャンで .mmtsmap 生成)
-            MmtsTsExporter             (EDL を連続 PTS の MPEG-2 TS に再多重化)
-            MmtsSmartExporter          (フレーム精度 .mmts 出力: 透過コピー+境界スプライス)
+  model/    MmtsMap, MmtsEdit          (.mmtsmap / .mmtsedit parsing, EDL model)
+            MmtsCutPlan                (shared EDL-to-RAP-boundary/copy-range planner)
+            MmtsExporter               (.mmts output with byte copies at RAP boundaries)
+  decode/   MmtsVideoDecoder           (frame-accurate HEVC decoding)
+            MmtsDecodeController       (worker thread, read-ahead, frame cache)
+            MmtsMapBuilder             (.mmtsmap generation through dantto4k scanning)
+            MmtsTsExporter             (remultiplexes an EDL to MPEG-2 TS with continuous PTS)
+            MmtsSmartExporter          (frame-accurate .mmts output: pass-through copy + boundary splice)
   ui/       MainWindow, PreviewWidget, TimelineWidget
 tests/      decode_test, controller_test, edit_test, mapbuild_test,
-            export_test, ts_export_test, smart_export_test  (ヘッドレスのスモークテスト)
-            mmts_edit_cli  (CLI 本体。`mmts-edit-cli` 実行ファイルとしてビルド)
+            export_test, ts_export_test, smart_export_test  (headless smoke tests)
+            mmts_edit_cli  (CLI implementation; built as the `mmts-edit-cli` executable)
 ```
 
-## ビルド
+## Build
 
 ```powershell
 C:\Qt\Tools\CMake_64\bin\cmake.exe -S . -B build-msvc -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH=C:\Qt\6.11.1\msvc2022_64
 C:\Qt\Tools\CMake_64\bin\cmake.exe --build build-msvc --config Release
 ```
 
-ffmpeg の開発ライブラリはリポジトリに含めていません。Windows 向けの LGPL **shared**
-ビルド（例: BtbN/FFmpeg-Builds）をダウンロードし、`thirdparty/ffmpeg/{include,lib,bin}`
-が存在するように `thirdparty/ffmpeg` に展開するか、`-DFFMPEG_DIR=...` で既存の
-インストール先を指定してください。
+ffmpeg development libraries are not included in the repository. Download a
+Windows LGPL **shared** build, such as one from BtbN/FFmpeg-Builds, and extract
+it into `thirdparty/ffmpeg` so that `thirdparty/ffmpeg/{include,lib,bin}`
+exists. Alternatively, point `-DFFMPEG_DIR=...` to an existing installation.
 
-## ライセンス
+## License
 
-MIT（`LICENSE` を参照）。本プロジェクトは dantto4k のソースをリンクし、実行時に
-ffmpeg（LGPL）を使用します。これらはそれぞれのライセンスに従います。
+MIT; see `LICENSE`. This project links dantto4k sources and uses ffmpeg (LGPL)
+at runtime. Those components remain subject to their respective licenses.
