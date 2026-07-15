@@ -54,6 +54,13 @@ foreach(name ${DANTTO4K_SOURCES})
     list(APPEND DANTTO4K_SRC_FILES "${DANTTO4K_DIR}/src/${name}.cpp")
 endforeach()
 
+# b24SubtitleConvertor logs subtitle diagnostics through a helper normally
+# provided by remuxerHandler.cpp.  The remuxer requires TSDuck, so Linux
+# builds without TSDuck need a no-op definition to satisfy that dependency.
+if(NOT MMTS_ENABLE_TSDUCK)
+    list(APPEND DANTTO4K_SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/SubtitleDebugLogStub.cpp")
+endif()
+
 # dantto4k is older, less strict C++ -- relax conformance & noisy warnings for it only.
 if(MSVC)
     set_source_files_properties(${DANTTO4K_SRC_FILES} PROPERTIES
