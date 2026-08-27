@@ -25,8 +25,9 @@ endif()
 
 # dantto4k core sources (mirror of mmts-dsfilter's subset; excludes TSDuck/CAS/BonDriver).
 set(DANTTO4K_SOURCES
-    accessControlDescriptor adtsConverter aes aribEncoder aribUtil b24Color
-    b24SubtitleConvertor caMessage compressedIPPacket config
+    accessControlDescriptor additionalAribSubtitleInfo adtsConverter aes
+    aribCharsetEncoder aribCharsetTables aribTextEncoder b24Color
+    b24SubtitleConverter caMessage compressedIPPacket config
     contentCopyControlDescriptor damt dataTransmissionMessage dataUnit dcct ddmt
     ecm emt eventPackageDescriptor extensionHeaderScrambling fragmentAssembler
     indexItem ipv6 m2SectionMessage m2ShortSectionMessage mhAit
@@ -43,23 +44,27 @@ set(DANTTO4K_SOURCES
     mmtGeneralLocationInfo mmtp mmtSplice mmtsMapWriter mmtStream mmtTableFactory mmtTlvDemuxer mpt mpu
     mpuApplicationProcessor mpuAudioProcessor mpuExtendedTimestampDescriptor
     mpuProcessorFactory mpuSubtitleProcessor mpuTimestampDescriptor mpuVideoProcessor
-    multimediaServiceInformationDescriptor networkNameDescriptor nit ntp paMessage
+    multimediaServiceInformationDescriptor networkNameDescriptor nit ntp
+    ntpTimestamp paMessage
     pesPacket plt pugixml relatedBroadcasterDescriptor remoteControlKeyDescriptor
     serviceListDescriptor signalingMessage stream systemManagementDescriptor timebase
     timeUtil tlv tlvDescriptorFactory tlvDescriptors tlvTableFactory
-    transmissionControlSignal ttml videoComponentDescriptor)
+    transmissionControlSignal videoComponentDescriptor
+    # dantto4k's TTML layer lives in its own subdirectory since the upstream
+    # rewrite; the loop below joins these onto ${DANTTO4K_DIR}/src/.
+    ttml/b24_converter ttml/drcs ttml/parser ttml/resolver ttml/style)
 
 set(DANTTO4K_SRC_FILES "")
 foreach(name ${DANTTO4K_SOURCES})
     list(APPEND DANTTO4K_SRC_FILES "${DANTTO4K_DIR}/src/${name}.cpp")
 endforeach()
 
-# b24SubtitleConvertor logs subtitle diagnostics through a helper normally
-# provided by remuxerHandler.cpp.  The remuxer requires TSDuck, so Linux
-# builds without TSDuck need a no-op definition to satisfy that dependency.
-if(NOT MMTS_ENABLE_TSDUCK)
-    list(APPEND DANTTO4K_SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/SubtitleDebugLogStub.cpp")
-endif()
+# dantto4k logs subtitle diagnostics through subtitleDebugLog(), which
+# remuxerHandler.cpp defines and both b24SubtitleConverter.cpp and
+# ttml/drcs.cpp reference.  The remuxer needs TSDuck, and several targets do
+# not link it even when TSDuck is on, so every target gets exactly one
+# definition: the remuxer where it is wanted, this no-op everywhere else.
+set(SUBTITLE_LOG_STUB "${CMAKE_CURRENT_SOURCE_DIR}/src/SubtitleDebugLogStub.cpp")
 
 # dantto4k is older, less strict C++ -- relax conformance & noisy warnings for it only.
 if(MSVC)
@@ -103,6 +108,8 @@ if(MMTS_ENABLE_TSDUCK)
     set(TSDUCK_LIBDIR "${TSDUCK_ROOT}/bin/$<IF:$<CONFIG:Debug>,Debug,Release>-x64")
 
     # dantto4k's TS remuxer (depends on tsduck) -- relaxed warnings like the rest.
+    # It also carries subtitleDebugLog(), so targets taking REMUX_SRC must not
+    # add SUBTITLE_LOG_STUB as well.
     set(REMUX_SRC "${DANTTO4K_DIR}/src/remuxerHandler.cpp")
     if(MSVC)
         set_source_files_properties(${REMUX_SRC} PROPERTIES
@@ -131,6 +138,9 @@ if(MMTS_ENABLE_TSDUCK)
     list(APPEND TS_SRC
         src/decode/MmtsTsExporter.cpp src/decode/MmtsTsExporter.h
         ${REMUX_SRC})
+else()
+    # Without the remuxer these targets have no subtitleDebugLog() definition.
+    list(APPEND TS_SRC "${SUBTITLE_LOG_STUB}")
 endif()
 
 # Project source groups.
@@ -186,7 +196,7 @@ add_executable(mmts-decode-test
     tests/decode_test.cpp
     src/model/MmtsMap.cpp src/model/MmtsMap.h
     ${DECODE_SRC}
-    ${DANTTO4K_SRC_FILES})
+    ${DANTTO4K_SRC_FILES} ${SUBTITLE_LOG_STUB})
 target_include_directories(mmts-decode-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_directories(mmts-decode-test PRIVATE "${FFMPEG_DIR}/lib")
 target_link_libraries(mmts-decode-test PRIVATE Qt6::Gui avcodec avutil swscale)
@@ -197,7 +207,7 @@ add_executable(mmts-controller-test
     tests/controller_test.cpp
     src/model/MmtsMap.cpp src/model/MmtsMap.h
     ${DECODE_SRC}
-    ${DANTTO4K_SRC_FILES})
+    ${DANTTO4K_SRC_FILES} ${SUBTITLE_LOG_STUB})
 target_include_directories(mmts-controller-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_directories(mmts-controller-test PRIVATE "${FFMPEG_DIR}/lib")
 target_link_libraries(mmts-controller-test PRIVATE Qt6::Gui avcodec avutil swscale)
@@ -233,7 +243,7 @@ add_executable(mmts-reencode-test
     tests/reencode_test.cpp
     src/model/MmtsMap.cpp src/model/MmtsMap.h
     src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
-    ${DANTTO4K_SRC_FILES})
+    ${DANTTO4K_SRC_FILES} ${SUBTITLE_LOG_STUB})
 target_include_directories(mmts-reencode-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_directories(mmts-reencode-test PRIVATE "${FFMPEG_DIR}/lib")
 target_link_libraries(mmts-reencode-test PRIVATE Qt6::Core avcodec avutil swscale)
@@ -244,7 +254,7 @@ add_executable(mmts-mapbuild-test
     tests/mapbuild_test.cpp
     src/model/MmtsMap.cpp src/model/MmtsMap.h
     src/decode/MmtsMapBuilder.cpp src/decode/MmtsMapBuilder.h
-    ${DANTTO4K_SRC_FILES})
+    ${DANTTO4K_SRC_FILES} ${SUBTITLE_LOG_STUB})
 target_include_directories(mmts-mapbuild-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_libraries(mmts-mapbuild-test PRIVATE Qt6::Core)
 enable_windows_runtime(mmts-mapbuild-test)
@@ -257,7 +267,7 @@ add_executable(mmts-smart-export-test
     src/model/MmtsCutPlan.cpp src/model/MmtsCutPlan.h
     src/decode/MmtsSmartExporter.cpp src/decode/MmtsSmartExporter.h
     src/decode/HevcReencoder.cpp src/decode/HevcReencoder.h
-    ${DANTTO4K_SRC_FILES})
+    ${DANTTO4K_SRC_FILES} ${SUBTITLE_LOG_STUB})
 target_include_directories(mmts-smart-export-test PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_directories(mmts-smart-export-test PRIVATE "${FFMPEG_DIR}/lib")
 target_link_libraries(mmts-smart-export-test PRIVATE Qt6::Core avcodec avutil swscale)
