@@ -14,13 +14,9 @@ jobs:
     steps:
       - name: Checkout mmts-edit-gui
         uses: actions/checkout@v6
-
-      - name: Checkout dantto4k
-        uses: actions/checkout@v6
         with:
-          repository: ${{ github.repository_owner }}/dantto4k
-          path: dantto4k
           submodules: recursive
+
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -50,7 +46,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & "dantto4k\thirdparty\tsduck\scripts\install-prerequisites.ps1" `
+          & "thirdparty\dantto4k\thirdparty\tsduck\scripts\install-prerequisites.ps1" `
             -GitHubActions `
             -NoDoxygen `
             -NoInstaller `
@@ -60,7 +56,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $propsPath = "dantto4k\thirdparty\tsduck\scripts\msvc\msvc-common-base.props"
+          $propsPath = "thirdparty\dantto4k\thirdparty\tsduck\scripts\msvc\msvc-common-base.props"
           $props = Get-Content -LiteralPath $propsPath -Raw
           $patched = $props.Replace(
             "4800;4702;4592;4505;5264;`$(DisableSpecificWarnings)",
@@ -80,7 +76,7 @@ jobs:
           if (-not $msbuild) {
             throw "MSBuild not found."
           }
-          & $msbuild "dantto4k\thirdparty\tsduck\scripts\msvc\tsduck.sln" `
+          & $msbuild "thirdparty\dantto4k\thirdparty\tsduck\scripts\msvc\tsduck.sln" `
             /m `
             /p:Configuration=Release `
             /p:Platform=x64 `
@@ -95,7 +91,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           cmake -S . -B build-msvc -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
-            -DDANTTO4K_DIR="$env:GITHUB_WORKSPACE\dantto4k" `
+            -DDANTTO4K_DIR="$env:GITHUB_WORKSPACE\thirdparty\dantto4k" `
             -DFFMPEG_DIR="$env:GITHUB_WORKSPACE\thirdparty\ffmpeg" `
             -DMMTS_ENABLE_TSDUCK=ON
 
@@ -143,12 +139,9 @@ jobs:
     steps:
       - name: Checkout mmts-edit-gui
         uses: actions/checkout@v6
-
-      - name: Checkout dantto4k
-        uses: actions/checkout@v6
         with:
-          repository: ${{ github.repository_owner }}/dantto4k
-          path: dantto4k
+          submodules: recursive
+
 
       - name: Install system dependencies
         run: |
@@ -188,7 +181,7 @@ jobs:
         run: |
           cmake -S . -B build-linux \
             -DCMAKE_BUILD_TYPE=Release \
-            -DDANTTO4K_DIR="$GITHUB_WORKSPACE/dantto4k" \
+            -DDANTTO4K_DIR="$GITHUB_WORKSPACE/thirdparty/dantto4k" \
             -DFFMPEG_DIR="$FFMPEG_DIR" \
             -DMMTS_ENABLE_TSDUCK=OFF
 

@@ -13,11 +13,17 @@ option(MMTS_ENABLE_TSDUCK "Enable MPEG-2 TS export support via TSDuck" ${WIN32})
 # ---------------------------------------------------------------------------
 # External projects
 # ---------------------------------------------------------------------------
-set(DANTTO4K_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../dantto4k" CACHE PATH "Path to dantto4k checkout")
+# dantto4k ships as a submodule so a clone builds on its own and a build is
+# reproducible from this revision alone. Point DANTTO4K_DIR elsewhere (e.g.
+# -DDANTTO4K_DIR=../dantto4k) to build against a working copy instead.
+set(DANTTO4K_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/dantto4k" CACHE PATH "Path to dantto4k checkout")
 set(FFMPEG_DIR   "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/ffmpeg" CACHE PATH "Path to prebuilt ffmpeg (include/lib/bin)")
 
 if(NOT EXISTS "${DANTTO4K_DIR}/src/mmtTlvDemuxer.h")
-    message(FATAL_ERROR "dantto4k sources not found at ${DANTTO4K_DIR}. Set -DDANTTO4K_DIR=...")
+    message(FATAL_ERROR
+        "dantto4k sources not found at ${DANTTO4K_DIR}.\n"
+        "Run: git submodule update --init --recursive\n"
+        "or set -DDANTTO4K_DIR=<path to a dantto4k checkout>.")
 endif()
 if(NOT EXISTS "${FFMPEG_DIR}/include/libavcodec/avcodec.h")
     message(FATAL_ERROR "ffmpeg dev libraries not found at ${FFMPEG_DIR}. Set -DFFMPEG_DIR=...")

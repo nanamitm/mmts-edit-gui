@@ -149,11 +149,13 @@ mmts-edit-cli --input <src.mmts> --output <out.ts|out.mmts> --cut <start>-<end> 
 ## Dependencies
 
 - Qt 6 (Widgets).
-- dantto4k sources. The default location is `../dantto4k`; the project
-  compiles a CAS-independent subset directly.
+- dantto4k sources, pinned as a submodule at `thirdparty/dantto4k`; the
+  project compiles a CAS-independent subset directly. Clone with
+  `--recurse-submodules`, or run `git submodule update --init --recursive`
+  afterwards. Point `-DDANTTO4K_DIR=...` at a working copy (for example
+  `../dantto4k`) to build against that instead of the pinned revision.
 - Prebuilt LGPL shared ffmpeg development libraries in `thirdparty/ffmpeg`
-  (`include/lib/bin`). Override locations with `-DDANTTO4K_DIR=...` and
-  `-DFFMPEG_DIR=...`.
+  (`include/lib/bin`). Override with `-DFFMPEG_DIR=...`.
 - tsduck for TS export. dantto4k's `thirdparty/tsduck` must contain built
   static libraries (`bin/<Config>-x64/tsducklib.lib`, `tscorelib.lib`) and
   `bin/include`. Building dantto4k once creates them.

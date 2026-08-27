@@ -1,0 +1,4 @@
+[submodule "thirdparty/dantto4k"]
+	path = thirdparty/dantto4k
+	url = https://github.com/nanamitm/dantto4k.git
+	branch = main
