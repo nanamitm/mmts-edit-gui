@@ -110,6 +110,7 @@ private:
 struct PendingPacket {
     std::vector<uint8_t> bytes;
     PacketInfo info;
+    qint64 offset = 0; // source offset, so a merge window can order it
 };
 
 class SigTracker {
@@ -121,11 +122,12 @@ public:
     };
 
     // Returns the messages completed by this packet.
-    std::vector<std::vector<uint8_t>> feed(const uint8_t* pkt, const PacketInfo& info, bool buffering)
+    std::vector<std::vector<uint8_t>> feed(const uint8_t* pkt, const PacketInfo& info, bool buffering,
+                                           qint64 offset = 0)
     {
         auto& st = m_pids[info.packetId];
         if (buffering)
-            st.pending.push_back(PendingPacket{ { pkt, pkt + info.size }, info });
+            st.pending.push_back(PendingPacket{ { pkt, pkt + info.size }, info, offset });
 
         std::vector<std::vector<uint8_t>> completed;
         const uint8_t* payload = pkt + info.signalingPayloadOffset;
@@ -714,6 +716,8 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
             HeadKind kind = HeadKind::Other;
             bool raw = false;  // write verbatim (e.g. already-shifted NTP)
             bool lead = false; // synthesized lead-in video (no real byte offset)
+            bool mpt = false;  // carries an MPT: one must lead the flushed block
+            bool front = false; // must precede the synthesized lead-in it announces
         };
         std::vector<HeadPkt> headBuf;
         bool headMerge = !audioPids.empty();
@@ -734,8 +738,25 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         qint64 tailStart = 0; // tail window opens this far before copyEnd
         constexpr qint64 kTailWindowBytes = 6 * 1024 * 1024;
         const auto pushMerge = [&](std::vector<HeadPkt>& buf, HeadKind kind, const uint8_t* d,
-                                   const PacketInfo& pi, qint64 off, bool raw = false, bool lead = false) {
-            buf.push_back(HeadPkt{ std::vector<uint8_t>(d, d + pi.size), pi, off, kind, raw, lead });
+                                   const PacketInfo& pi, qint64 off, bool raw = false, bool lead = false,
+                                   bool mpt = false, bool front = false) {
+            buf.push_back(HeadPkt{ std::vector<uint8_t>(d, d + pi.size), pi, off, kind, raw, lead, mpt, front });
+        };
+        // A reader entering a flushed block has to meet an MPT before any media,
+        // or it cannot tell which packet id is which asset and drops everything
+        // until the next one. Ordering by source offset alone does not
+        // guarantee that, so pull the earliest MPT of the block to the front.
+        const auto hoistFirstMpt = [](const std::vector<HeadPkt>& buf,
+                                      std::vector<std::pair<double, size_t>>& order) {
+            size_t best = order.size();
+            for (size_t j = 0; j < order.size(); j++) {
+                if (!buf[order[j].second].mpt)
+                    continue;
+                if (best == order.size() || order[j].first < order[best].first)
+                    best = j;
+            }
+            if (best < order.size())
+                order[best].first = -1.0;
         };
         // Emit the buffered head window. Lead-in video spreads across the
         // FilterIn byte span [headStart, headCopyStart); copy video and "other"
@@ -768,10 +789,13 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                     key = na > 0 ? (static_cast<double>(ia++) + 0.5) / static_cast<double>(na) : 0.0;
                 else if (headBuf[i].lead)
                     key = nLead > 0 ? ((static_cast<double>(il++) + 0.5) / static_cast<double>(nLead)) * leadFrac : 0.0;
+                else if (headBuf[i].front)
+                    key = -1.0; // announces the lead-in MPUs, so it has to precede them
                 else
                     key = static_cast<double>(headBuf[i].offset - headStart) / span;
                 order.emplace_back(key, i);
             }
+            hoistFirstMpt(headBuf, order);
             std::stable_sort(order.begin(), order.end(),
                              [](const auto& a, const auto& b) { return a.first < b.first; });
             for (const auto& [k, i] : order) {
@@ -812,6 +836,7 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                     key = static_cast<double>(tailBuf[i].offset - tailStart) / span;
                 order.emplace_back(key, i);
             }
+            hoistFirstMpt(tailBuf, order);
             std::stable_sort(order.begin(), order.end(),
                              [](const auto& a, const auto& b) { return a.first < b.first; });
             for (const auto& [k, i] : order) {
@@ -832,6 +857,31 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                 emitMmtp(d, pi);
         };
 
+        // Signaling has to travel inside the merge windows, not around them.
+        // Written straight out while audio and video are buffered, it all lands
+        // ahead of the flushed block - leaving multi-megabyte stretches of the
+        // output with no MPT in them. Playback from the start is fine, but
+        // nothing can resume mid-stream inside such a stretch: without an MPT a
+        // reader never learns which packet id carries which asset, so the video
+        // packets are there and get discarded. Ordering by source offset puts
+        // signaling back among the packets it was multiplexed with.
+        const auto emitSignaling = [&](const uint8_t* d, const PacketInfo& pi, qint64 off,
+                                       bool isMpt = false, bool front = false) {
+            if (headMerge)
+                pushMerge(headBuf, HeadKind::Other, d, pi, off, false, false, isMpt, front);
+            else if (tailMerge)
+                pushMerge(tailBuf, HeadKind::Other, d, pi, off, false, false, isMpt, front);
+            else
+                emitMmtp(d, pi);
+        };
+        const auto emitSignalingPacket = [&](const std::vector<uint8_t>& pkt, qint64 off, bool front) {
+            PacketInfo pi;
+            if (MmtTlv::Splice::parsePacket(pkt.data(), pkt.size(), pi) && pi.mmtp)
+                emitSignaling(pkt.data(), pi, off, /*isMpt=*/true, front);
+            else
+                writeBytes(pkt.data(), pkt.size());
+        };
+
         // --- single streaming pass over [scanStart, endByte)
         enum class Region { FilterIn, Copy, FilterOut };
         SigTracker sig;
@@ -850,7 +900,8 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         const auto flushPending = [&] {
             for (auto& [pid, st] : sig.pids()) {
                 for (const auto& pp : st.pending)
-                    emitMmtp(pp.bytes.data(), pp.info);
+                    emitSignaling(pp.bytes.data(), pp.info, pp.offset,
+                                  /*isMpt=*/false, region == Region::FilterIn);
                 st.pending.clear();
             }
         };
@@ -902,15 +953,16 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
             }
             const auto patched = MmtTlv::Splice::patchMptVideoTimestamps(mpt, videoPid, *newMpus,
                                                                          dropMin, dropMax, shiftUs, &mpuOff);
+            const bool front = (rgn == Region::FilterIn);
             if (!patched || st.pending.empty()) {
                 for (const auto& pp : st.pending)
-                    emitMmtp(pp.bytes.data(), pp.info);
+                    emitSignaling(pp.bytes.data(), pp.info, pp.offset, /*isMpt=*/true, front);
             } else {
                 const auto& first = st.pending.front().info;
                 const auto pkt = MmtTlv::Splice::packPaMptPacket(
                     *patched, first.packetId, first.contextId, first.packetSequenceNumber,
                     first.deliveryTimestamp, paVersion);
-                emitOwnPacket(pkt);
+                emitSignalingPacket(pkt, st.pending.front().offset, front);
             }
             st.pending.clear();
         };
@@ -972,7 +1024,7 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                 // messages are passed through unchanged on completion.
                 auto& st = sig.state(info.packetId);
                 bool replaced = false;
-                for (auto& msg : sig.feed(data, info, true)) {
+                for (auto& msg : sig.feed(data, info, true, offset)) {
                     std::vector<uint8_t> mpt;
                     uint8_t paVersion = 0;
                     if (extractMptFromMessage(msg, &mpt, &paVersion)) {
@@ -983,7 +1035,8 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
                 if (!replaced && !st.inFragment) {
                     // Message(s) completed without an MPT: keep the original packets.
                     for (const auto& pp : st.pending)
-                        emitMmtp(pp.bytes.data(), pp.info);
+                        emitSignaling(pp.bytes.data(), pp.info, pp.offset,
+                                      /*isMpt=*/false, region == Region::FilterIn);
                     st.pending.clear();
                 }
             } else if (info.packetId == videoPid) {
