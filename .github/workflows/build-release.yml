@@ -97,7 +97,7 @@ jobs:
 
       - name: Build
         shell: pwsh
-        run: cmake --build build-msvc --config Release --target mmts-edit-gui
+        run: cmake --build build-msvc --config Release --target mmts-edit-gui mmts-edit-cli
 
       - name: Package
         shell: pwsh
@@ -109,6 +109,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
           Copy-Item "build-msvc\Release\mmts-edit-gui.exe" $stage
+          # The headless exporter ships alongside the GUI: batch jobs and large
+          # recordings are the cases it exists for, and building it by hand is
+          # the only way to get one otherwise.
+          Copy-Item "build-msvc\Release\mmts-edit-cli.exe" $stage
           Copy-Item "build-msvc\Release\avcodec-62.dll" $stage -ErrorAction SilentlyContinue
           Copy-Item "build-msvc\Release\avutil-60.dll" $stage -ErrorAction SilentlyContinue
           Copy-Item "build-msvc\Release\swscale-9.dll" $stage -ErrorAction SilentlyContinue
@@ -116,6 +120,9 @@ jobs:
           Copy-Item README.md, LICENSE $stage
 
           & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations --compiler-runtime "$stage\mmts-edit-gui.exe"
+          # The CLI needs only QtCore, which the GUI's deployment already put
+          # here, but let windeployqt confirm that rather than assuming it.
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations "$stage\mmts-edit-cli.exe"
 
           Compress-Archive -Path "$stage\*" -DestinationPath "$package.zip" -Force
           "PACKAGE=$package.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
