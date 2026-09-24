@@ -7,6 +7,14 @@ on:
 permissions:
   contents: write
 
+# FFmpeg is pinned to one BtbN autobuild so every release ships the same
+# version: n9.0.1 plus the release/9.0 fixes up to 2026-08-31. BtbN keeps
+# monthly builds, so this tag stays downloadable.
+env:
+  FFMPEG_RELEASE: autobuild-2026-08-31-13-27
+  FFMPEG_BUILD: ffmpeg-n9.0.1-11-ge47273f4d9
+  FFMPEG_SERIES: "9.0"
+
 jobs:
   windows-x64:
     runs-on: windows-2022
@@ -30,17 +38,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $zip = Join-Path $env:RUNNER_TEMP 'ffmpeg-win64-lgpl-shared.zip'
+          $name = "$env:FFMPEG_BUILD-win64-lgpl-shared-$env:FFMPEG_SERIES"
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
           Invoke-WebRequest `
-            -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip' `
+            -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/$env:FFMPEG_RELEASE/$name.zip" `
             -OutFile $zip
           Expand-Archive -LiteralPath $zip -DestinationPath $env:RUNNER_TEMP -Force
-          $root = Get-ChildItem -Path $env:RUNNER_TEMP -Directory | Where-Object { $_.Name -like 'ffmpeg-master-latest-win64-lgpl-shared*' } | Select-Object -First 1
-          if (-not $root) {
+          $root = Join-Path $env:RUNNER_TEMP $name
+          if (-not (Test-Path -LiteralPath $root)) {
             throw 'Expanded FFmpeg directory not found.'
           }
           New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\thirdparty" | Out-Null
-          Move-Item -LiteralPath $root.FullName -Destination "$env:GITHUB_WORKSPACE\thirdparty\ffmpeg"
+          Move-Item -LiteralPath $root -Destination "$env:GITHUB_WORKSPACE\thirdparty\ffmpeg"
 
       - name: Install TSDuck prerequisites
         shell: pwsh
@@ -113,10 +122,15 @@ jobs:
           # recordings are the cases it exists for, and building it by hand is
           # the only way to get one otherwise.
           Copy-Item "build-msvc\Release\mmts-edit-cli.exe" $stage
-          Copy-Item "build-msvc\Release\avcodec-62.dll" $stage -ErrorAction SilentlyContinue
-          Copy-Item "build-msvc\Release\avutil-60.dll" $stage -ErrorAction SilentlyContinue
-          Copy-Item "build-msvc\Release\swscale-9.dll" $stage -ErrorAction SilentlyContinue
-          Copy-Item "build-msvc\Release\swresample-6.dll" $stage -ErrorAction SilentlyContinue
+          # Match by library name so a major-version bump can't silently
+          # leave the FFmpeg DLLs out of the package.
+          foreach ($lib in 'avcodec', 'avutil', 'swscale', 'swresample') {
+            $dll = Get-ChildItem "build-msvc\Release\$lib-*.dll"
+            if (-not $dll) {
+              throw "$lib-*.dll not found in build-msvc\Release."
+            }
+            Copy-Item $dll.FullName $stage
+          }
           Copy-Item README.md, LICENSE $stage
 
           & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations --compiler-runtime "$stage\mmts-edit-gui.exe"
@@ -156,10 +170,6 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             cmake \
-            libavcodec-dev \
-            libavutil-dev \
-            libswscale-dev \
-            libswresample-dev \
             libgl1-mesa-dev \
             libxkbcommon-x11-0 \
             libxkbcommon-dev \
@@ -170,18 +180,15 @@ jobs:
             qt6-base-dev-tools \
             qt6-tools-dev-tools
 
-      - name: Prepare FFmpeg layout
+      - name: Download FFmpeg
         run: |
           set -eux
-          FFMPEG_DIR="$RUNNER_TEMP/ffmpeg-linux"
-          mkdir -p "$FFMPEG_DIR/bin"
-          ln -s /usr/include/x86_64-linux-gnu "$FFMPEG_DIR/include"
-          ln -s /usr/lib/x86_64-linux-gnu "$FFMPEG_DIR/lib"
-          for lib in libavcodec.so.59 libavutil.so.57 libswscale.so.6 libswresample.so.4; do
-            if [ -e "/usr/lib/x86_64-linux-gnu/$lib" ]; then
-              ln -s "/usr/lib/x86_64-linux-gnu/$lib" "$FFMPEG_DIR/bin/$lib"
-            fi
-          done
+          NAME="$FFMPEG_BUILD-linux64-lgpl-shared-$FFMPEG_SERIES"
+          curl -fL -o "$RUNNER_TEMP/$NAME.tar.xz" \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_RELEASE/$NAME.tar.xz"
+          tar -xJf "$RUNNER_TEMP/$NAME.tar.xz" -C "$RUNNER_TEMP"
+          FFMPEG_DIR="$RUNNER_TEMP/$NAME"
+          test -e "$FFMPEG_DIR/include/libavcodec/avcodec.h"
           echo "FFMPEG_DIR=$FFMPEG_DIR" >> "$GITHUB_ENV"
 
       - name: Configure
@@ -237,6 +244,8 @@ jobs:
           cp README.md LICENSE AppDir/usr/share/doc/mmts-edit-gui/
 
           export QMAKE=/usr/bin/qmake6
+          # Let linuxdeploy resolve and bundle the BtbN FFmpeg libraries.
+          export LD_LIBRARY_PATH="$FFMPEG_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           ./linuxdeploy-x86_64.AppImage --appdir AppDir \
             -e AppDir/usr/bin/mmts-edit-gui \
             -d mmts-edit-gui.desktop \

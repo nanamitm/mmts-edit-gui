@@ -155,7 +155,12 @@ mmts-edit-cli --input <src.mmts> --output <out.ts|out.mmts> --cut <start>-<end> 
   afterwards. Point `-DDANTTO4K_DIR=...` at a working copy (for example
   `../dantto4k`) to build against that instead of the pinned revision.
 - Prebuilt LGPL shared ffmpeg development libraries in `thirdparty/ffmpeg`
-  (`include/lib/bin`). Override with `-DFFMPEG_DIR=...`.
+  (`include/lib/bin`). Override with `-DFFMPEG_DIR=...`. Releases ship FFmpeg
+  9.0.1 (BtbN `ffmpeg-n9.0.1-11-ge47273f4d9`).
+- Frame-accurate export re-encodes boundary GOPs with `hevc_nvenc`, which with
+  FFmpeg 9.0 requires an **NVIDIA driver 610.00 or newer** (NVENC API 13.1).
+  With an older driver the encoder fails to open; use `--no-frame-accurate`
+  or Snap to RAP to cut at RAP boundaries instead.
 - tsduck for TS export. dantto4k's `thirdparty/tsduck` must contain built
   static libraries (`bin/<Config>-x64/tsducklib.lib`, `tscorelib.lib`) and
   `bin/include`. Building dantto4k once creates them.
@@ -202,10 +207,12 @@ C:\Qt\Tools\CMake_64\bin\cmake.exe -S . -B build-msvc -G "Visual Studio 17 2022"
 C:\Qt\Tools\CMake_64\bin\cmake.exe --build build-msvc --config Release
 ```
 
-ffmpeg development libraries are not included in the repository. Download a
-Windows LGPL **shared** build, such as one from BtbN/FFmpeg-Builds, and extract
-it into `thirdparty/ffmpeg` so that `thirdparty/ffmpeg/{include,lib,bin}`
-exists. Alternatively, point `-DFFMPEG_DIR=...` to an existing installation.
+ffmpeg development libraries are not included in the repository. Download the
+Windows LGPL **shared** build that CI uses,
+`ffmpeg-n9.0.1-11-ge47273f4d9-win64-lgpl-shared-9.0.zip` from the BtbN/FFmpeg-Builds
+release `autobuild-2026-08-31-13-27`, and extract it into `thirdparty/ffmpeg` so
+that `thirdparty/ffmpeg/{include,lib,bin}` exists. Alternatively, point
+`-DFFMPEG_DIR=...` to an existing installation.
 
 ## License
 

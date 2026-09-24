@@ -315,14 +315,19 @@ endif()
 # Copy required ffmpeg runtime DLLs next to the executables.
 # ---------------------------------------------------------------------------
 if(WIN32)
-    set(FFMPEG_DLLS avcodec-62 avutil-60 swscale-9 swresample-6)
+    # Match by library name so an FFmpeg major-version bump (avcodec-62 ->
+    # avcodec-63, ...) doesn't silently drop the DLLs.
+    set(FFMPEG_DLLS)
+    foreach(lib avcodec avutil swscale swresample)
+        file(GLOB dll "${FFMPEG_DIR}/bin/${lib}-*.dll")
+        if(NOT dll)
+            message(FATAL_ERROR "${lib}-*.dll not found in ${FFMPEG_DIR}/bin")
+        endif()
+        list(APPEND FFMPEG_DLLS ${dll})
+    endforeach()
     foreach(tgt mmts-edit-gui mmts-decode-test mmts-controller-test mmts-edit-cli)
-        foreach(dll ${FFMPEG_DLLS})
-            if(EXISTS "${FFMPEG_DIR}/bin/${dll}.dll")
-                add_custom_command(TARGET ${tgt} POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "${FFMPEG_DIR}/bin/${dll}.dll" "$<TARGET_FILE_DIR:${tgt}>")
-            endif()
-        endforeach()
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${FFMPEG_DLLS} "$<TARGET_FILE_DIR:${tgt}>")
     endforeach()
 endif()
