@@ -58,7 +58,7 @@ set(DANTTO4K_SOURCES
     transmissionControlSignal videoComponentDescriptor
     # dantto4k's TTML layer lives in its own subdirectory since the upstream
     # rewrite; the loop below joins these onto ${DANTTO4K_DIR}/src/.
-    ttml/b24_converter ttml/drcs ttml/parser ttml/resolver ttml/style)
+    ttml/b24_converter ttml/drcs ttml/drcs_font ttml/parser ttml/resolver ttml/style)
 
 set(DANTTO4K_SRC_FILES "")
 foreach(name ${DANTTO4K_SOURCES})
