@@ -393,8 +393,6 @@ bool MainWindow::openEdit(const QString& path)
         statusBar()->showMessage(QString("Edit loaded, but source media not found: %1").arg(sourcePath));
     }
 
-    if (edit.segments.isEmpty())
-        edit.segments.push_back(EditSegment{0, m_map.durationMs});
     setSegments(edit.segments, 0);
     return true;
 }

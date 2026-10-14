@@ -287,9 +287,10 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // An .mmtsedit with no saved cuts still represents "the whole program".
-    if (segments.isEmpty())
-        segments.push_back(EditSegment{0, map.durationMs});
+    if (segments.isEmpty()) {
+        std::fprintf(stderr, "error: edit timeline is empty; nothing to export\n");
+        return 1;
+    }
 
     const qint64 srcSize = QFileInfo(srcPath).size();
     int smartRenderSegments = 0;
