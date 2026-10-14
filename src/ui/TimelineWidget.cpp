@@ -69,10 +69,6 @@ int TimelineWidget::xForTime(qint64 timeMs) const
         return lane.left();
 
     qint64 relative = timeMs;
-    // Map markers (rap/seek/mpt) carry absolute PTS ms; segment/playhead times
-    // are already relative. Normalise the absolute ones to 0-based.
-    if (m_map.firstVideoPtsMs >= 0 && timeMs >= m_map.firstVideoPtsMs)
-        relative = timeMs - m_map.firstVideoPtsMs;
     relative = std::clamp<qint64>(relative, 0, m_map.durationMs);
     return lane.left() + static_cast<int>((static_cast<double>(relative) / m_map.durationMs) * lane.width());
 }
@@ -97,7 +93,7 @@ qint64 TimelineWidget::snapRel(qint64 relMs, int xPixel) const
         const qint64 rel = p.timeMs - m_map.firstVideoPtsMs;
         if (rel < 0 || rel > m_map.durationMs)
             continue;
-        const int dist = std::abs(xForTime(p.timeMs) - xPixel);
+        const int dist = std::abs(xForTime(p.timeMs - std::max<qint64>(0, m_map.firstVideoPtsMs)) - xPixel);
         if (dist < bestDist) {
             bestDist = dist;
             bestRel = rel;
@@ -218,19 +214,19 @@ void TimelineWidget::paintEvent(QPaintEvent*)
 
     p.setPen(QColor(84, 155, 255, 90));
     for (const auto& point : m_map.rapPoints) {
-        const int x = xForTime(point.timeMs);
+        const int x = xForTime(point.timeMs - std::max<qint64>(0, m_map.firstVideoPtsMs));
         p.drawLine(x, lane.top(), x, lane.bottom());
     }
 
     p.setPen(QPen(QColor(116, 214, 143), 2));
     for (const auto& point : m_map.seekPoints) {
-        const int x = xForTime(point.timeMs);
+        const int x = xForTime(point.timeMs - std::max<qint64>(0, m_map.firstVideoPtsMs));
         p.drawLine(x, lane.top(), x, lane.bottom());
     }
 
     p.setPen(QPen(QColor(255, 196, 87), 3));
     for (const auto& change : m_map.mptChanges) {
-        const int x = xForTime(change.timeMs);
+        const int x = xForTime(change.timeMs - std::max<qint64>(0, m_map.firstVideoPtsMs));
         p.drawLine(x, lane.top() - 8, x, lane.bottom() + 8);
     }
 

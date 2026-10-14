@@ -1,3 +1,4 @@
+#include "FilePathSafety.h"
 #include "MmtsMapBuilder.h"
 
 #include "mmtTlvDemuxer.h"
@@ -12,6 +13,7 @@
 bool MmtsMapBuilder::build(const QString& srcPath, const QString& mapPath, QString* errorMessage,
                            const std::function<bool(qint64, qint64)>& progress)
 {
+    if (!distinctOutput(srcPath, mapPath, errorMessage)) return false;
     std::ifstream ifs(std::filesystem::path(srcPath.toStdWString()), std::ios::binary | std::ios::ate);
     if (!ifs.is_open()) {
         if (errorMessage)

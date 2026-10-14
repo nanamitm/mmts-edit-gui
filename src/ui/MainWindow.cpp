@@ -333,6 +333,15 @@ bool MainWindow::openMap(const QString& path)
         return false;
     }
 
+    m_decode->closeMedia();
+    m_mediaPath.clear();
+    m_durationMs = 0;
+    m_fps = 0.0;
+    m_currentRelMs = 0;
+    m_pendingRequestId = 0;
+    m_preview->clearFrame();
+    m_seekSlider->setEnabled(false);
+    m_seekSlider->setRange(0, 0);
     m_map = map;
     m_timeline->setMap(m_map);
     const qint64 fullRangeMs = 24ll * 60 * 60 * 1000;
@@ -393,8 +402,6 @@ bool MainWindow::openEdit(const QString& path)
         statusBar()->showMessage(QString("Edit loaded, but source media not found: %1").arg(sourcePath));
     }
 
-    if (edit.segments.isEmpty())
-        edit.segments.push_back(EditSegment{0, m_map.durationMs});
     setSegments(edit.segments, 0);
     return true;
 }

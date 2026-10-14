@@ -1,3 +1,4 @@
+#include "FilePathSafety.h"
 #include "MmtsExporter.h"
 
 #include <QFile>
@@ -52,6 +53,7 @@ bool MmtsExporter::copyRanges(const QString& srcPath, const QString& dstPath,
         return false;
     }
 
+    if (!distinctOutput(srcPath, dstPath, errorMessage)) return false;
     QFile in(srcPath);
     if (!in.open(QIODevice::ReadOnly)) {
         if (errorMessage)
@@ -104,6 +106,10 @@ bool MmtsExporter::copyRanges(const QString& srcPath, const QString& dstPath,
                 return false;
             }
         }
+    }
+    if (!out.flush()) {
+        if (errorMessage) *errorMessage = out.errorString();
+        return false;
     }
     return true;
 }
