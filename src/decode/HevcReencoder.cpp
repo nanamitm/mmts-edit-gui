@@ -224,7 +224,7 @@ bool HevcReencoder::reencode(const QString& mmtsPath, const MmtsMap& map,
             if (consumed > 0) buf.erase(buf.begin(), buf.begin() + consumed);
         }
         gotAu = handler.pop(au);
-        if (!gotAu && eof && buf.empty()) {
+        if (!gotAu && eof) {
             // flush decoder to drain trailing frames
             avcodec_send_packet(decCtx, nullptr);
         } else if (gotAu) {
@@ -250,7 +250,7 @@ bool HevcReencoder::reencode(const QString& mmtsPath, const MmtsMap& map,
             if (!encodeFrame(frame, framePtsAbs - firstPts)) { ok = false; done = true; break; }
         }
 
-        if (!gotAu && eof && buf.empty())
+        if (!gotAu && eof)
             break; // decoder flushed and drained
     }
 
