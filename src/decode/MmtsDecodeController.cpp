@@ -225,7 +225,7 @@ MmtsDecodeController::MmtsDecodeController(QObject* parent)
     qRegisterMetaType<MmtsMap>("MmtsMap");
 
     m_worker = new MmtsDecodeWorker();
-    m_worker->setCache(&m_cache);
+    m_worker->setCache(m_cache);
     m_worker->moveToThread(&m_thread);
     connect(&m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
     connect(m_worker, &MmtsDecodeWorker::opened, this,
@@ -242,7 +242,7 @@ MmtsDecodeController::MmtsDecodeController(QObject* parent)
     m_thread.start();
 
     m_prefetch = new MmtsPrefetchWorker();
-    m_prefetch->setCache(&m_cache);
+    m_prefetch->setCache(m_cache);
     m_prefetch->moveToThread(&m_prefetchThread);
     connect(&m_prefetchThread, &QThread::finished, m_prefetch, &QObject::deleteLater);
     m_prefetchThread.start();
