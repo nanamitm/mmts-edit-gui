@@ -79,29 +79,30 @@ public:
         quint64 id = 0;
     };
 
-    void setCache(FrameCache* c) { m_cache = c; }
+    void setCache(std::shared_ptr<FrameCache> c) { m_cache = std::move(c); }
     void setPending(const Request& req); // thread-safe
 
 public slots:
-    void open(const QString& path, const MmtsMap& map);
+    void open(const QString& path, const MmtsMap& map, quint64 generation);
     void processPending();
     void shutdown();
 
 signals:
-    void opened(bool ok, qint64 durationMs, double fps, QString error);
-    void frameReady(QImage image, qint64 relMs, quint64 requestId);
+    void opened(bool ok, qint64 durationMs, double fps, QString error, quint64 generation);
+    void frameReady(QImage image, qint64 relMs, quint64 requestId, quint64 generation);
 
 private:
     qint64 frameIndexOf(qint64 ms) const;
     qint64 frameTimeOf(qint64 index) const;
 
     std::unique_ptr<MmtsVideoDecoder> m_decoder;
-    FrameCache* m_cache = nullptr;
+    std::shared_ptr<FrameCache> m_cache;
 
     QMutex m_mutex;
     Request m_pending;
     bool m_havePending = false;
 
+    quint64 m_generation = 0;
     qint64 m_curMs = 0;
     qint64 m_curIndex = 0;
 };
@@ -115,7 +116,7 @@ public:
     MmtsPrefetchWorker();
     ~MmtsPrefetchWorker() override;
 
-    void setCache(FrameCache* c) { m_cache = c; }
+    void setCache(std::shared_ptr<FrameCache> c) { m_cache = std::move(c); }
     void setPending(qint64 currentRelMs); // thread-safe
 
 public slots:
@@ -127,7 +128,7 @@ private:
     qint64 frameIndexOf(qint64 ms) const;
 
     std::unique_ptr<MmtsVideoDecoder> m_decoder;
-    FrameCache* m_cache = nullptr;
+    std::shared_ptr<FrameCache> m_cache;
     QVector<qint64> m_rapRel; // RAP times, relative ms, sorted
 
     QMutex m_mutex;
@@ -143,6 +144,7 @@ public:
     ~MmtsDecodeController() override;
 
     void openMedia(const QString& path, const MmtsMap& map);
+    void closeMedia();
     quint64 requestFrameAt(qint64 relMs);
     quint64 requestStep(int delta);
 
@@ -151,7 +153,8 @@ signals:
     void frameReady(QImage image, qint64 relMs, quint64 requestId);
 
 private:
-    FrameCache m_cache;
+    std::shared_ptr<FrameCache> m_cache = std::make_shared<FrameCache>();
+    quint64 m_generation = 0;
     QThread m_thread;
     QThread m_prefetchThread;
     MmtsDecodeWorker* m_worker = nullptr;

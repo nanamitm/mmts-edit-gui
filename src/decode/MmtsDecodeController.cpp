@@ -18,9 +18,10 @@ void MmtsDecodeWorker::setPending(const Request& req)
     m_havePending = true;
 }
 
-void MmtsDecodeWorker::open(const QString& path, const MmtsMap& map)
+void MmtsDecodeWorker::open(const QString& path, const MmtsMap& map, quint64 generation)
 {
     m_decoder = std::make_unique<MmtsVideoDecoder>();
+    m_generation = generation;
     m_decoder->setPreviewMaxWidth(960);
     // Cache frames decoded on the way to a step target so stepping back through
     // an already-decoded GOP is instant (enabled per-request in processPending).
@@ -39,7 +40,7 @@ void MmtsDecodeWorker::open(const QString& path, const MmtsMap& map)
     QString error;
     if (!m_decoder->open(path, map, &error)) {
         m_decoder.reset();
-        emit opened(false, 0, 0.0, error);
+        emit opened(false, 0, 0.0, error, m_generation);
         return;
     }
 
@@ -53,7 +54,7 @@ void MmtsDecodeWorker::open(const QString& path, const MmtsMap& map)
         if (m_cache)
             m_cache->put(m_curIndex, first, actual);
     }
-    emit opened(true, m_decoder->durationMs(), m_decoder->frameRate(), QString());
+    emit opened(true, m_decoder->durationMs(), m_decoder->frameRate(), QString(), m_generation);
 }
 
 void MmtsDecodeWorker::shutdown()
@@ -96,7 +97,7 @@ void MmtsDecodeWorker::processPending()
         m_curIndex = targetIndex;
         m_curMs = ms;
         m_decoder->resync(ms); // keep the decoder consistent for the next decode
-        emit frameReady(image, ms, req.id);
+        emit frameReady(image, ms, req.id, m_generation);
         return;
     }
 
@@ -117,7 +118,7 @@ void MmtsDecodeWorker::processPending()
     m_curIndex = frameIndexOf(actual);
     if (m_cache)
         m_cache->put(m_curIndex, image, actual);
-    emit frameReady(image, actual, req.id);
+    emit frameReady(image, actual, req.id, m_generation);
 }
 
 // ---------------------------------------------------------------------------
@@ -227,11 +228,15 @@ MmtsDecodeController::MmtsDecodeController(QObject* parent)
     m_worker->setCache(&m_cache);
     m_worker->moveToThread(&m_thread);
     connect(&m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
-    connect(m_worker, &MmtsDecodeWorker::opened, this, &MmtsDecodeController::opened);
-    connect(m_worker, &MmtsDecodeWorker::frameReady, this, &MmtsDecodeController::frameReady);
-    // After each delivered frame, ask the prefetch worker to fetch the previous GOP.
-    connect(m_worker, &MmtsDecodeWorker::frameReady, this, [this](const QImage&, qint64 relMs, quint64) {
-        m_prefetch->setPending(relMs);
+    connect(m_worker, &MmtsDecodeWorker::opened, this,
+            [this](bool ok, qint64 duration, double fps, const QString& error, quint64 generation) {
+        if (generation == m_generation) emit opened(ok, duration, fps, error);
+    });
+    connect(m_worker, &MmtsDecodeWorker::frameReady, this,
+            [this](const QImage& image, qint64 ms, quint64 id, quint64 generation) {
+        if (generation != m_generation) return;
+        emit frameReady(image, ms, id);
+        m_prefetch->setPending(ms);
         QMetaObject::invokeMethod(m_prefetch, "prefetch", Qt::QueuedConnection);
     });
     m_thread.start();
@@ -255,11 +260,17 @@ MmtsDecodeController::~MmtsDecodeController()
 
 void MmtsDecodeController::openMedia(const QString& path, const MmtsMap& map)
 {
-    m_cache.clear();
-    QMetaObject::invokeMethod(m_worker, "open", Qt::QueuedConnection,
-                              Q_ARG(QString, path), Q_ARG(MmtsMap, map));
-    QMetaObject::invokeMethod(m_prefetch, "open", Qt::QueuedConnection,
-                              Q_ARG(QString, path), Q_ARG(MmtsMap, map));
+    const auto generation = ++m_generation;
+    m_cache = std::make_shared<FrameCache>();
+    const auto cache = m_cache;
+    QMetaObject::invokeMethod(m_worker, [this, path, map, cache, generation] {
+        m_worker->setCache(cache);
+        m_worker->open(path, map, generation);
+    }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(m_prefetch, [this, path, map, cache] {
+        m_prefetch->setCache(cache);
+        m_prefetch->open(path, map);
+    }, Qt::QueuedConnection);
 }
 
 quint64 MmtsDecodeController::requestFrameAt(qint64 relMs)
@@ -276,4 +287,12 @@ quint64 MmtsDecodeController::requestStep(int delta)
     m_worker->setPending({MmtsDecodeWorker::Kind::Step, 0, delta, id});
     QMetaObject::invokeMethod(m_worker, "processPending", Qt::QueuedConnection);
     return id;
+}
+
+void MmtsDecodeController::closeMedia()
+{
+    ++m_generation;
+    QMetaObject::invokeMethod(m_worker, "shutdown", Qt::QueuedConnection);
+    QMetaObject::invokeMethod(m_prefetch, "shutdown", Qt::QueuedConnection);
+    m_cache = std::make_shared<FrameCache>();
 }
