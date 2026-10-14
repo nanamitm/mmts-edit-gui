@@ -107,6 +107,10 @@ bool MmtsExporter::copyRanges(const QString& srcPath, const QString& dstPath,
             }
         }
     }
+    if (!out.flush()) {
+        if (errorMessage) *errorMessage = out.errorString();
+        return false;
+    }
     return true;
 }
 

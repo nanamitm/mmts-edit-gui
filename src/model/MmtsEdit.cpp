@@ -1,6 +1,7 @@
 #include "MmtsEdit.h"
 
 #include <QFile>
+#include <QSaveFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -70,12 +71,16 @@ bool MmtsEdit::save(const QString& path, QString* errorMessage) const
     root["map"] = map;
     root["timeline"] = timeline;
 
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
         if (errorMessage)
             *errorMessage = file.errorString();
         return false;
     }
-    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size() || !file.commit()) {
+        if (errorMessage) *errorMessage = file.errorString();
+        return false;
+    }
     return true;
 }

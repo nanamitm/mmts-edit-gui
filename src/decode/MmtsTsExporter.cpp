@@ -315,6 +315,11 @@ bool MmtsTsExporter::exportTs(const QString& srcPath, const QString& dstPath,
     }
 
     ofs.flush();
+    ofs.close();
+    if (!ofs) {
+        if (errorMessage) *errorMessage = QStringLiteral("Output write, flush or close failed.");
+        return false;
+    }
     return true;
 }
 
