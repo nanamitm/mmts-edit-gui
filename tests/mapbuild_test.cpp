@@ -33,7 +33,10 @@ int main(int argc, char** argv)
                  (long long)map.firstVideoPtsMs, (int)map.tracks.size(),
                  (int)map.mptChanges.size(), (int)map.rapPoints.size(), (int)map.seekPoints.size());
 
-    const bool ok = map.format == "MMTSMAP2" && map.durationMs > 0 && !map.rapPoints.isEmpty();
+    // dantto4k writes MMTSMAP3 (binary, with audio channel metadata); the
+    // reader still accepts MMTSMAP2 maps written by older versions.
+    const bool ok = (map.format == "MMTSMAP3" || map.format == "MMTSMAP2") &&
+                    map.durationMs > 0 && !map.rapPoints.isEmpty();
     std::fprintf(stderr, "valid=%d\n", ok ? 1 : 0);
     return ok ? 0 : 1;
 }

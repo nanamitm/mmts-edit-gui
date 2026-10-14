@@ -32,6 +32,7 @@ endif()
 # dantto4k core sources (mirror of mmts-dsfilter's subset; excludes TSDuck/CAS/BonDriver).
 set(DANTTO4K_SOURCES
     accessControlDescriptor additionalAribSubtitleInfo adtsConverter aes
+    applicationServiceDescriptor
     aribCharsetEncoder aribCharsetTables aribTextEncoder b24Color
     b24SubtitleConverter caMessage compressedIPPacket config
     contentCopyControlDescriptor damt dataTransmissionMessage dataUnit dcct ddmt
@@ -116,7 +117,11 @@ if(MMTS_ENABLE_TSDUCK)
     # dantto4k's TS remuxer (depends on tsduck) -- relaxed warnings like the rest.
     # It also carries subtitleDebugLog(), so targets taking REMUX_SRC must not
     # add SUBTITLE_LOG_STUB as well.
-    set(REMUX_SRC "${DANTTO4K_DIR}/src/remuxerHandler.cpp")
+    # The remuxer carries 4K data broadcasting into the TS through these.
+    set(REMUX_SRC
+        "${DANTTO4K_DIR}/src/remuxerHandler.cpp"
+        "${DANTTO4K_DIR}/src/appDataTransport.cpp"
+        "${DANTTO4K_DIR}/src/appItemAssembler.cpp")
     if(MSVC)
         set_source_files_properties(${REMUX_SRC} PROPERTIES
             COMPILE_OPTIONS "/permissive;/wd4996;/wd4244;/wd4267;/wd4018;/wd4800;/wd4819")
