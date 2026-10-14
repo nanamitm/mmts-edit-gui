@@ -1,3 +1,4 @@
+#include "FilePathSafety.h"
 #include "MmtsTsExporter.h"
 
 #include "HevcReencoder.h"
@@ -177,6 +178,7 @@ bool MmtsTsExporter::exportTs(const QString& srcPath, const QString& dstPath,
     }
     const qint64 firstPts = map.firstVideoPtsMs > 0 ? map.firstVideoPtsMs : 0;
 
+    if (!distinctOutput(srcPath, dstPath, errorMessage)) return false;
     std::ifstream ifs(std::filesystem::path(srcPath.toStdWString()), std::ios::binary);
     if (!ifs.is_open()) {
         if (errorMessage) *errorMessage = QStringLiteral("Cannot open source: %1").arg(srcPath);

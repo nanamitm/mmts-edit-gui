@@ -1,3 +1,4 @@
+#include "FilePathSafety.h"
 #include "MmtsSmartExporter.h"
 
 #include "HevcReencoder.h"
@@ -455,6 +456,7 @@ bool MmtsSmartExporter::exportMmts(const QString& srcPath, const QString& dstPat
         return sourceSizeBytes;
     };
 
+    if (!distinctOutput(srcPath, dstPath, errorMessage)) return false;
     std::ifstream ifs(std::filesystem::path(srcPath.toStdWString()), std::ios::binary);
     if (!ifs.is_open()) {
         if (errorMessage) *errorMessage = QStringLiteral("Cannot open source: %1").arg(srcPath);
