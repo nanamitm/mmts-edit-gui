@@ -108,7 +108,17 @@ jobs:
 
       - name: Build
         shell: pwsh
-        run: cmake --build build-msvc --config Release --target mmts-edit-gui mmts-edit-cli
+        run: cmake --build build-msvc --config Release --target mmts-edit-gui mmts-edit-cli mmts-edit-test
+
+      # The edit model's save/load round trip. The other test programs take a
+      # real .mmts recording, which CI does not have.
+      - name: Run tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
+          & "build-msvc\Release\mmts-edit-test.exe" (Join-Path $env:RUNNER_TEMP 'roundtrip.mmtsedit')
+          if ($LASTEXITCODE -ne 0) { throw "mmts-edit-test failed with exit code $LASTEXITCODE" }
 
       - name: Package
         shell: pwsh
@@ -202,7 +212,10 @@ jobs:
             -DMMTS_ENABLE_TSDUCK=OFF
 
       - name: Build
-        run: cmake --build build-linux --parallel --target mmts-edit-gui
+        run: cmake --build build-linux --parallel --target mmts-edit-gui mmts-edit-test
+
+      - name: Run tests
+        run: ./build-linux/mmts-edit-test "$RUNNER_TEMP/roundtrip.mmtsedit"
 
       - name: Download linuxdeploy
         run: |
