@@ -214,6 +214,13 @@ release `autobuild-2026-08-31-13-27`, and extract it into `thirdparty/ffmpeg` so
 that `thirdparty/ffmpeg/{include,lib,bin}` exists. Alternatively, point
 `-DFFMPEG_DIR=...` to an existing installation.
 
+Every build writes the version it comes from (`git describe --tags --always
+--dirty`, e.g. `v20261015a-2-gb96f5d2`) to `generated/MmtsEditVersion.h` in
+the build directory (`cmake/GenerateVersionHeader.cmake`, like TVTest's
+`TVTestVersionHashGen.bat`). It shows in the window title,
+`mmts-edit-cli --version` and, on Windows, the file properties of
+`mmts-edit-gui.exe`. Without git it is `unknown`.
+
 ## License
 
 MIT; see `LICENSE`. This project links dantto4k sources and uses ffmpeg (LGPL)

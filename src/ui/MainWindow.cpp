@@ -10,6 +10,15 @@
 #endif
 #include "PreviewWidget.h"
 
+// The version this build comes from, written at build time by
+// cmake/GenerateVersionHeader.cmake (like TVTest's TVTestVersionHashGen.bat).
+#if __has_include("MmtsEditVersion.h")
+#include "MmtsEditVersion.h"
+#endif
+#ifndef MMTS_EDIT_VERSION_STRING
+#define MMTS_EDIT_VERSION_STRING "unknown"
+#endif
+
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
@@ -49,7 +58,7 @@ QString formatMs(qint64 ms)
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    setWindowTitle("MMTS Edit GUI");
+    setWindowTitle("MMTS Edit GUI " MMTS_EDIT_VERSION_STRING);
     resize(1100, 720);
 
     auto* openMediaAction = new QAction("Open Media...", this);
