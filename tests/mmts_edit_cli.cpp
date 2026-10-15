@@ -40,12 +40,21 @@
 #include <cmath>
 #include <cstdio>
 
+// The version this build comes from, written at build time by
+// cmake/GenerateVersionHeader.cmake (like TVTest's TVTestVersionHashGen.bat).
+#if __has_include("MmtsEditVersion.h")
+#include "MmtsEditVersion.h"
+#endif
+#ifndef MMTS_EDIT_VERSION_STRING
+#define MMTS_EDIT_VERSION_STRING "unknown"
+#endif
+
 namespace {
 
 void PrintUsage()
 {
     std::fprintf(stderr,
-        "mmts-edit-cli: headless MMTS exporter (CLI counterpart to mmts-edit-gui)\n\n"
+        "mmts-edit-cli " MMTS_EDIT_VERSION_STRING ": headless MMTS exporter (CLI counterpart to mmts-edit-gui)\n\n"
         "Usage:\n"
         "  mmts-edit-cli --edit <project.mmtsedit> --output <out.ts|out.mmts> [options]\n"
         "  mmts-edit-cli --input <src.mmts> --output <out.ts|out.mmts> --cut <start>-<end> [--cut ...] [options]\n\n"
@@ -62,7 +71,8 @@ void PrintUsage()
         "  --map <path>         .mmtsmap sidecar (default: <source>map); built automatically if missing\n"
         "  --no-frame-accurate  Allow falling back to RAP boundaries instead of failing when a\n"
         "                       cut needs a boundary re-encode the build/GPU can't do\n"
-        "  --quiet              Suppress progress output\n");
+        "  --quiet              Suppress progress output\n"
+        "  --version            Show the version\n");
 }
 
 bool ParseTimeMs(const QString& raw, qint64& outMs)
@@ -170,6 +180,9 @@ int main(int argc, char** argv)
             quiet = true;
         } else if (a == QLatin1String("--help") || a == QLatin1String("-h")) {
             PrintUsage();
+            return 0;
+        } else if (a == QLatin1String("--version")) {
+            std::printf("mmts-edit-cli %s\n", MMTS_EDIT_VERSION_STRING);
             return 0;
         } else {
             std::fprintf(stderr, "error: unknown argument '%s'\n", a.toLocal8Bit().constData());

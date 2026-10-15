@@ -176,6 +176,25 @@ function(enable_windows_runtime tgt)
     endif()
 endfunction()
 
+# The version this build comes from (git describe), written to
+# MmtsEditVersion.h at every build like TVTest's TVTestVersionHashGen.bat.
+# See cmake/GenerateVersionHeader.cmake.
+set(VERSION_HEADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_custom_target(mmts-edit-version
+    COMMAND "${CMAKE_COMMAND}"
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DOUTPUT=${VERSION_HEADER_DIR}/MmtsEditVersion.h"
+        -DNAME=MMTS_EDIT
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateVersionHeader.cmake"
+    BYPRODUCTS "${VERSION_HEADER_DIR}/MmtsEditVersion.h"
+    COMMENT "Generating MmtsEditVersion.h"
+    VERBATIM)
+
+function(use_version_header tgt)
+    add_dependencies(${tgt} mmts-edit-version)
+    target_include_directories(${tgt} PRIVATE "${VERSION_HEADER_DIR}")
+endfunction()
+
 # ---------------------------------------------------------------------------
 # Main application
 # ---------------------------------------------------------------------------
@@ -195,6 +214,7 @@ target_include_directories(mmts-edit-gui PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_directories(mmts-edit-gui PRIVATE "${FFMPEG_DIR}/lib")
 target_link_libraries(mmts-edit-gui PRIVATE Qt6::Widgets avcodec avutil swscale)
 enable_windows_runtime(mmts-edit-gui)
+use_version_header(mmts-edit-gui)
 if(MMTS_ENABLE_TSDUCK)
     enable_tsduck(mmts-edit-gui)
 endif()
@@ -312,6 +332,7 @@ target_include_directories(mmts-edit-cli PRIVATE ${APP_INCLUDE} ${EXT_INCLUDE})
 target_link_directories(mmts-edit-cli PRIVATE "${FFMPEG_DIR}/lib")
 target_link_libraries(mmts-edit-cli PRIVATE Qt6::Core avcodec avutil swscale)
 enable_windows_runtime(mmts-edit-cli)
+use_version_header(mmts-edit-cli)
 if(MMTS_ENABLE_TSDUCK)
     enable_tsduck(mmts-edit-cli)
 endif()
