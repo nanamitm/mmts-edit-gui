@@ -18,13 +18,26 @@ set(version "unknown")
 find_package(Git QUIET)
 if(GIT_FOUND)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" -C "${SOURCE_DIR}" describe --tags --always --dirty
+        COMMAND "${GIT_EXECUTABLE}" -C "${SOURCE_DIR}" describe --tags --always
         OUTPUT_VARIABLE described
         RESULT_VARIABLE result
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET)
     if(result EQUAL 0 AND described)
         set(version "${described}")
+        # "-dirty" like `git describe --dirty`, but changes inside submodules
+        # do not count: building TSDuck (thirdparty/dantto4k/thirdparty/tsduck)
+        # patches its MSVC settings. A submodule moved to another commit still
+        # counts.
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${SOURCE_DIR}" status --porcelain --untracked-files=no --ignore-submodules=dirty
+            OUTPUT_VARIABLE changes
+            RESULT_VARIABLE result
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(NOT result EQUAL 0 OR changes)
+            string(APPEND version "-dirty")
+        endif()
     endif()
 endif()
 
