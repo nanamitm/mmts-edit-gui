@@ -32,6 +32,8 @@ bool MmtsMapBuilder::build(const QString& srcPath, const QString& mapPath, QStri
     writer.setSourceSize(static_cast<uint64_t>(total > 0 ? total : 0));
 
     MmtTlv::MmtTlvDemuxer demuxer;
+    // Track stream indices come from the demuxer, matching the decoders' streams.
+    writer.setDemuxer(demuxer);
     // Each decoded (pass-through) TLV packet advances the writer's byte offset,
     // so recorded RAP/seek/MPT offsets are source-file offsets.
     demuxer.setDecodedDumpCallback([&writer](const uint8_t*, size_t size) {
