@@ -36,7 +36,7 @@ set(DANTTO4K_SOURCES
     aribCharsetEncoder aribCharsetTables aribTextEncoder b24Color
     b24SubtitleConverter caMessage compressedIPPacket config
     contentCopyControlDescriptor damt dataTransmissionMessage dataUnit dcct ddmt
-    ecm emt eventPackageDescriptor extensionHeaderScrambling fragmentAssembler
+    ecm emm emt eventPackageDescriptor extensionHeaderScrambling fragmentAssembler
     indexItem ipv6 m2SectionMessage m2ShortSectionMessage mhAit
     mhApplicationBoundaryAndPermissionDescriptor mhApplicationDescriptor
     mhAudioComponentDescriptor mhAutostartPriorityDescriptor mhBit
