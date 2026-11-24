@@ -156,7 +156,7 @@ mmts-edit-cli --input <src.mmts> --output <out.ts|out.mmts> --cut <start>-<end> 
   `../dantto4k`) to build against that instead of the pinned revision.
 - Prebuilt LGPL shared ffmpeg development libraries in `thirdparty/ffmpeg`
   (`include/lib/bin`). Override with `-DFFMPEG_DIR=...`. Releases ship FFmpeg
-  9.0.1 (BtbN `ffmpeg-n9.0.1-11-ge47273f4d9`).
+  9.0.2 (BtbN `ffmpeg-n9.0.2-39-g7adfbe40dc`).
 - Frame-accurate export re-encodes boundary GOPs with `hevc_nvenc`, which with
   FFmpeg 9.0 requires an **NVIDIA driver 610.00 or newer** (NVENC API 13.1).
   With an older driver the encoder fails to open; use `--no-frame-accurate`
@@ -209,8 +209,8 @@ C:\Qt\Tools\CMake_64\bin\cmake.exe --build build-msvc --config Release
 
 ffmpeg development libraries are not included in the repository. Download the
 Windows LGPL **shared** build that CI uses,
-`ffmpeg-n9.0.1-11-ge47273f4d9-win64-lgpl-shared-9.0.zip` from the BtbN/FFmpeg-Builds
-release `autobuild-2026-08-31-13-27`, and extract it into `thirdparty/ffmpeg` so
+`ffmpeg-n9.0.2-39-g7adfbe40dc-win64-lgpl-shared-9.0.zip` from the BtbN/FFmpeg-Builds
+release `autobuild-2026-10-31-12-59`, and extract it into `thirdparty/ffmpeg` so
 that `thirdparty/ffmpeg/{include,lib,bin}` exists. Alternatively, point
 `-DFFMPEG_DIR=...` to an existing installation.
 

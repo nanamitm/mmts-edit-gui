@@ -10,11 +10,11 @@ permissions:
   contents: write
 
 # FFmpeg is pinned to one BtbN autobuild so every release ships the same
-# version: n9.0.1 plus the release/9.0 fixes up to 2026-08-31. BtbN keeps
+# version: n9.0.2 plus the release/9.0 fixes up to 2026-10-31. BtbN keeps
 # monthly builds, so this tag stays downloadable.
 env:
-  FFMPEG_RELEASE: autobuild-2026-08-31-13-27
-  FFMPEG_BUILD: ffmpeg-n9.0.1-11-ge47273f4d9
+  FFMPEG_RELEASE: autobuild-2026-10-31-12-59
+  FFMPEG_BUILD: ffmpeg-n9.0.2-39-g7adfbe40dc
   FFMPEG_SERIES: "9.0"
 
 jobs:
